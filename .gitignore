@@ -1,0 +1,10 @@
+/checkpoints/
+/data/*
+!/data/prepare_data.py
+/log/
+/metrics/
+/res/
+
+*.pth
+
+__pycache__/
