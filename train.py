@@ -18,7 +18,7 @@ PRETRAINED_PATH = os.path.join(ROOT, "model.pth")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # hyperparameters
-BATCH_SIZE = 16
+BATCH_SIZE = 12
 IMG_SIZE = 512
 EPOCHS = 100
 FREEZE_ENCODER = True  # <---【开关】True: 冻结ViT，只训Decoder; False: 全量微调
@@ -46,13 +46,11 @@ def train(log_dir):
         print(">>> Mode: Full Fine-tuning (Encoder + Decoder).")
     
     # 3. Loss & Optimizer
-    # criterion = nn.L1Loss() # MAE Loss
     criterion = CompositeLoss(
         l1_weight=1.0, 
-        msssim_weight=0, 
-        grad_weight=0.5, 
-        device=DEVICE
-    )
+        grad_weight=0.5,
+        perceptual_weight=0.1
+        ).to(DEVICE)
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     
     total_params = sum(p.numel() for p in model.parameters())
@@ -98,7 +96,7 @@ def train(log_dir):
             loop.set_postfix(loss=loss.item())
             writer.add_scalar('Loss/Train_Step', loss.item(), global_step)
             writer.add_scalar('Loss/Step_L1', loss_dict['l1'], global_step)
-            # writer.add_scalar('Loss/Step_MSSSIM', loss_dict['msssim'], global_step)
+            writer.add_scalar('Loss/Step_Perceptual', loss_dict['perceptual'], global_step)
             writer.add_scalar('Loss/Step_Grad', loss_dict['grad'], global_step)
             global_step += 1
             
@@ -139,7 +137,6 @@ def train(log_dir):
                                   pred_vis * 0.5 + 0.5, 
                                   fixed_ct * 0.5 + 0.5], dim=0)
             
-            # make_grid 会自动处理 batch 维度，nrow 设置为 batch size 可以让每一列对应一个样本
             grid = make_grid(img_grid, nrow=fixed_cbct.shape[0], padding=2, normalize=False)
             
             writer.add_image('Visual/Input_Pred_GT', grid, epoch)

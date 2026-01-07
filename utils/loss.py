@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from pytorch_msssim import SSIM, MS_SSIM
+import torchvision.models as models
 
 
 class CharbonnierLoss(nn.Module):
@@ -51,42 +51,80 @@ class GradientLoss(nn.Module):
         
         return loss_x + loss_y
 
+class VGGPerceptualLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+        vgg = models.vgg19(weights=models.VGG19_Weights.DEFAULT).features       
+        # 冻结参数
+        for param in vgg.parameters():
+            param.requires_grad = False
+
+        self.slice1 = torch.nn.Sequential()
+        self.slice2 = torch.nn.Sequential()
+        self.slice3 = torch.nn.Sequential()
+        self.slice4 = torch.nn.Sequential()
+        self.slice5 = torch.nn.Sequential()
+        
+        for x in range(4):  self.slice1.add_module(str(x), vgg[x])
+        for x in range(4, 9): self.slice2.add_module(str(x), vgg[x])
+        for x in range(9, 18): self.slice3.add_module(str(x), vgg[x])
+        for x in range(18, 27): self.slice4.add_module(str(x), vgg[x])
+        for x in range(27, 36): self.slice5.add_module(str(x), vgg[x])
+        self.eval()
+        
+        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+
+    def preprocess(self, x):
+        x = x * 0.5 + 0.5  # [-1,1] -> [0,1]
+        x = torch.clamp(x, 0.0, 1.0)
+
+        if x.shape[1] == 1:
+            x = x.repeat(1, 3, 1, 1)
+
+        return (x - self.mean) / self.std
+    
+    def forward(self, input, target):
+        input = self.preprocess(input)
+        target = self.preprocess(target)
+        
+        loss = 0.0
+        weights = [1.0/32, 1.0/16, 1.0/8, 1.0/4, 1.0]
+        slices = [self.slice1, self.slice2, self.slice3, self.slice4, self.slice5]
+
+        x = input
+        y = target
+        for i, slice_net in enumerate(slices):
+            x = slice_net(x)
+            y = slice_net(y)
+            loss += F.l1_loss(x, y) * weights[i]
+
+        return loss
+    
 class CompositeLoss(nn.Module):
     def __init__(self, 
                  l1_weight=1.0, 
-                 msssim_weight=0.5, 
                  grad_weight=0.5, 
-                 device='cuda'):
+                 perceptual_weight=0.1):
         """
         Args:
             l1_weight: L1 Loss 权重 (控制绝对 HU 精度)
-            msssim_weight: MS-SSIM Loss 权重 (控制整体结构)
+            perceptual_weight: Perceptual Loss 权重 (控制感知质量)
             grad_weight: Gradient Loss 权重 (控制纹理清晰度)
         """
         super(CompositeLoss, self).__init__()
         self.l1_weight = l1_weight
-        self.msssim_weight = msssim_weight
         self.grad_weight = grad_weight
+        self.perceptual_weight = perceptual_weight
         
-        # 1. L1 Loss
+        # L1 Loss
         self.l1 = CharbonnierLoss() if l1_weight > 0 else None
         
-        # 2. Gradient Loss
+        # Gradient Loss
         self.grad = GradientLoss() if grad_weight > 0 else None
-        
-        # 3. MS-SSIM Loss
-        # 【关键计算】
-        # 输入范围: [-1.0, 2.18]
-        # data_range = Max - Min = 2.18 - (-1.0) = 3.18
-        # 我们稍微放大一点点取整，或者直接用 3.18，确保数值稳定性。
-        self.data_range = 4
-        
-        # 假设 sCT 输出是 1 通道 (如果你的网络输出是3通道，这里 channel 改为 3)
-        self.msssim_module = MS_SSIM(
-            data_range=self.data_range, 
-            size_average=True, 
-            channel=1
-        ).to(device) if msssim_weight > 0 else None
+
+        # Perceptual Loss
+        self.perceptual = VGGPerceptualLoss() if perceptual_weight > 0 else None
 
     def forward(self, pred, target):
         """
@@ -96,24 +134,23 @@ class CompositeLoss(nn.Module):
         total_loss = 0
         loss_dict = {}
 
-        # 1. L1 Loss
-        if self.l1_weight > 0 and self.l1 is not None:
+        # L1 Loss
+        if self.l1 is not None:
             loss_l1 = self.l1(pred, target)
             total_loss += self.l1_weight * loss_l1
             loss_dict["l1"] = loss_l1.item()
 
-        # 2. MS-SSIM Loss
-        if self.msssim_weight > 0 and self.msssim_module is not None:
-            loss_msssim = 1 - self.msssim_module(pred, target)
-            total_loss += self.msssim_weight * loss_msssim
-            loss_dict["msssim"] = loss_msssim.item()
-
-        # 3. Gradient Loss
-        if self.grad_weight > 0 and self.grad is not None:
+        # Gradient Loss
+        if self.grad is not None:
             loss_grad = self.grad(pred, target)
             total_loss += self.grad_weight * loss_grad
             loss_dict["grad"] = loss_grad.item()
 
+        # Perceptual Loss
+        if self.perceptual is not None:
+            loss_perceptual = self.perceptual(pred, target)
+            total_loss += self.perceptual_weight * loss_perceptual
+            loss_dict["perceptual"] = loss_perceptual.item()
+
         return total_loss, loss_dict
     
-    # perceptual loss
