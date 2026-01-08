@@ -7,38 +7,41 @@ from torch.amp import autocast, GradScaler
 import os
 import datetime
 from tqdm import tqdm
+import argparse
 
 from meddino import MedDINOGenerator
 from utils.dataset import SynthRADDataset
 from utils.loss import CompositeLoss
 
-# 全局配置
+# global configs
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PRETRAINED_PATH = os.path.join(ROOT, "model.pth")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-# hyperparameters
-BATCH_SIZE = 12
-IMG_SIZE = 512
-EPOCHS = 100
-FREEZE_ENCODER = True  # <---【开关】True: 冻结ViT，只训Decoder; False: 全量微调
-
 SAVE_DIR = "./checkpoints/meddino_sct"
 
-def train(log_dir):
+# hyperparameters
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train MedDINO model")
+    parser.add_argument("--batch", type=int, default=12, help="Batch size for training")
+    parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
+    parser.add_argument("--img_size", type=int, default=512, help="Input image size")
+    parser.add_argument("--freeze_encoder", action="store_false", help="Freeze encoder (ViT backbone) during training")
+    return parser.parse_args()
+
+def train(log_dir, args):
     writer = SummaryWriter(log_dir=log_dir)
 
     # 1. Dataset & Loader
-    train_ds = SynthRADDataset(ROOT, split='train', img_size=IMG_SIZE, augment=False)
-    val_ds = SynthRADDataset(ROOT, split='val', img_size=IMG_SIZE, augment=False)
+    train_ds = SynthRADDataset(ROOT, split='train', img_size=args.img_size, augment=False)
+    val_ds = SynthRADDataset(ROOT, split='val', img_size=args.img_size, augment=False)
 
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=8, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=8, pin_memory=True)
+    val_loader = DataLoader(val_ds, batch_size=args.batch, shuffle=False, num_workers=4, pin_memory=True)
 
     # 2. Model
-    model = MedDINOGenerator(img_size=IMG_SIZE, pretrained_path=PRETRAINED_PATH).to(DEVICE)
+    model = MedDINOGenerator(img_size=args.img_size, pretrained_path=PRETRAINED_PATH).to(DEVICE)
 
-    if FREEZE_ENCODER:
+    if args.freeze_encoder:
         print(">>> Mode: Freezing Encoder (Backbone). Training Decoder only.")
         for param in model.encoder.parameters():
             param.requires_grad = False
@@ -58,7 +61,7 @@ def train(log_dir):
     print(f"Total Params: {total_params/1e6:.2f}M | Trainable: {trainable_count/1e6:.2f}M")
 
     optimizer = AdamW(trainable_params, lr=1e-5, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-7)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-7)
 
     scaler = GradScaler()
     
@@ -70,10 +73,10 @@ def train(log_dir):
     fixed_cbct = fixed_vis_batch['cbct'].to(DEVICE)
     fixed_ct = fixed_vis_batch['ct'].to(DEVICE)
     
-    for epoch in range(EPOCHS):
+    for epoch in range(args.epochs):
         model.train()
         train_loss = 0
-        loop = tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}")
+        loop = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")
         
         for batch in loop:
             cbct = batch['cbct'].to(DEVICE)  # (B, 3, H, W)
@@ -152,9 +155,10 @@ def train(log_dir):
     writer.close()
 
 if __name__ == "__main__":
+    args = parse_args()
     LOG_DIR = os.path.join(ROOT, "log", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
     
     os.makedirs(SAVE_DIR, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
     
-    train(LOG_DIR)
+    train(LOG_DIR, args)
