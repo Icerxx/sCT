@@ -38,7 +38,7 @@ class SynthRADDataset(Dataset):
                     shape = np.load(cbct_path, mmap_mode='r').shape
                     num_slices = shape[0]
                     for z in range(num_slices):
-                        self.samples.append((cbct_path, ct_path, z))
+                        self.samples.append((cbct_path, ct_path, z, num_slices))
                 except Exception as e:
                     print(f"Error reading {cbct_path}: {e}")
 
@@ -67,37 +67,50 @@ class SynthRADDataset(Dataset):
         return torch.from_numpy(scaled_img)
     
     def __getitem__(self, idx):
-        cbct_path, ct_path, slice_idx = self.samples[idx]
+        cbct_path, ct_path, z, num_slices = self.samples[idx]
         
         # mmap 读取 (int16)
         cbct_vol = np.load(cbct_path, mmap_mode='r')
         ct_vol = np.load(ct_path, mmap_mode='r')
         
-        img_cbct = cbct_vol[slice_idx].copy().astype(np.float32)
-        img_ct = ct_vol[slice_idx].copy().astype(np.float32)
+        # img_cbct = cbct_vol[z].copy().astype(np.float32)
+        # img_ct = ct_vol[z].copy().astype(np.float32)
         
-        # 归一化 (使用 SynthRAD 策略)
-        tensor_cbct = self.normalize(img_cbct)
-        tensor_ct = self.normalize(img_ct)
-        
-        # 增加维度 (1, 1, H, W)
-        tensor_cbct = tensor_cbct.unsqueeze(0).unsqueeze(0)
-        tensor_ct = tensor_ct.unsqueeze(0).unsqueeze(0)
-        
-        # 3. Resize
-        tensor_cbct = F.interpolate(tensor_cbct, size=(self.img_size, self.img_size), mode='bilinear', align_corners=False)
-        tensor_ct = F.interpolate(tensor_ct, size=(self.img_size, self.img_size), mode='bilinear', align_corners=False)
-        tensor_cbct = tensor_cbct.squeeze(0)
-        tensor_ct = tensor_ct.squeeze(0)
+        # 构造 2.5D 索引 [z-1, z, z+1]
+        # 边界处理: 第0层取[0,0,1], 最后一层取[N-2, N-1, N-1]
+        z_prev = max(0, z - 1)
+        z_next = min(num_slices - 1, z + 1)
+        indices = [z_prev, z, z_next]
 
-        # 4. Augmentation
+        cbct_slices = []
+        for i in indices:
+            # 读取单层 -> 转float32 -> 归一化
+            img_cbct = cbct_vol[i].copy().astype(np.float32)
+            cbct_slices.append(self.normalize(img_cbct))
+        # 堆叠成 3 通道: (H, W) list -> (3, H, W)
+        tensor_cbct = torch.stack(cbct_slices, dim=0)
+
+        img_ct = ct_vol[z].copy().astype(np.float32)
+        tensor_ct = self.normalize(img_ct).unsqueeze(0) # (1, H, W)
+
+        # normalize
+        # tensor_cbct = self.normalize(img_cbct)
+        # tensor_ct = self.normalize(img_ct)
+        
+        # Resize
+        tensor_cbct = F.interpolate(tensor_cbct.unsqueeze(0), size=(self.img_size, self.img_size), 
+                                    mode='bilinear', align_corners=False).squeeze(0) 
+        tensor_ct = F.interpolate(tensor_ct.unsqueeze(0), size=(self.img_size, self.img_size), 
+                                  mode='bilinear', align_corners=False).squeeze(0)
+
+        # Augmentation
         if self.augment:
             if torch.rand(1) < 0.5:
                 tensor_cbct = T.functional.hflip(tensor_cbct)
                 tensor_ct = T.functional.hflip(tensor_ct)
 
-        # 5. MedDINO 适配 (1 -> 3 channel)
-        tensor_cbct = tensor_cbct.repeat(3, 1, 1)
+        # # MedDINO 适配 (1 -> 3 channel)
+        # tensor_cbct = tensor_cbct.repeat(3, 1, 1)
         
         return {
             'cbct': tensor_cbct, 
