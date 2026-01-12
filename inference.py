@@ -1,33 +1,32 @@
 import os
-import sys
+import argparse
 import numpy as np
 import torch
 import torch.nn.functional as F
 import SimpleITK as sitk
 from tqdm import tqdm
 
-# 引入模型定义
 from meddino import MedDINOGenerator
 
-# --- 全局配置 ---
-ROOT = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(ROOT, "checkpoints", "meddino_sct", "best_model.pth") 
 
-# 数据路径
-# 结构: data/test/CaseName/cbct.mha
+# global config
+ROOT = os.path.dirname(os.path.abspath(__file__))
 TEST_DATA_DIR = os.path.join(ROOT, "data", "test")
 OUTPUT_DIR = os.path.join(ROOT, "res", "prediction")
-
-# 参数配置 (必须与训练时完全一致)
-from train import IMG_SIZE # 训练时用的 Resize 尺寸
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-BATCH_SIZE = 16
 
-# --- SynthRAD 归一化配置 ---
+# normalization constants
 CT_CLIP_MIN = -1024.0
 CT_CLIP_MAX = 3000.0
 NORM_MIN_HU = -1024.0
 NORM_MAX_HU = 1500.0
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Inference for MedDINO model")
+    parser.add_argument("--img_size", type=int, default=512, help="Input image size (must match training)")
+    parser.add_argument("--batch", type=int, default=16, help="Batch size for inference")
+    parser.add_argument("--model", type=str, default="best_model.pth", help="ROOT/checkpoints/meddino_sct")
+    return parser.parse_args()
 
 def preprocess_batch(vol_slice_np):
     """
@@ -54,7 +53,7 @@ def preprocess_batch(vol_slice_np):
     
     # 4. Resize 到训练尺寸 (512x512)
     # 这一步对应训练时的 F.interpolate
-    tensor = F.interpolate(tensor, size=(IMG_SIZE, IMG_SIZE), mode='bilinear', align_corners=False)
+    tensor = F.interpolate(tensor, size=(args.img_size, args.img_size), mode='bilinear', align_corners=False)
     
     # 5. MedDINO 适配: 1通道 -> 3通道
     tensor = tensor.repeat(1, 3, 1, 1)
@@ -118,9 +117,9 @@ def inference_case(model, case_name, save_root):
     
     # 2. 批量推理
     with torch.no_grad():
-        for i in range(0, num_slices, BATCH_SIZE):
+        for i in range(0, num_slices, args.batch):
             # 取出一个 Batch 的切片: (B, H, W)
-            batch_slice_np = origin_vol[i : i + BATCH_SIZE]
+            batch_slice_np = origin_vol[i : i + args.batch]
             
             # 预处理 (含归一化 + Resize 512 + 转3通道)
             batch_tensor = preprocess_batch(batch_slice_np)
@@ -151,10 +150,11 @@ def inference_case(model, case_name, save_root):
     sitk.WriteImage(sct_itk, save_path)
 
 
-def main():
-    # 1. 加载模型
+def main(args):
+    MODEL_PATH = os.path.join(ROOT, "checkpoints", "meddino_sct", args.model)
+
     print(f"Loading model from {MODEL_PATH}...")
-    model = MedDINOGenerator(img_size=IMG_SIZE).to(DEVICE)
+    model = MedDINOGenerator(img_size=args.img_size).to(DEVICE)
     
     if os.path.exists(MODEL_PATH):
         checkpoint = torch.load(MODEL_PATH, map_location=DEVICE, weights_only=True)
@@ -166,20 +166,18 @@ def main():
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # 2. 扫描测试集目录 (data/test)
     if not os.path.exists(TEST_DATA_DIR):
         print(f"Error: Test data directory not found: {TEST_DATA_DIR}")
         return
 
-    # 获取所有子文件夹 (即 Case Name)
     test_cases = sorted([d for d in os.listdir(TEST_DATA_DIR) if os.path.isdir(os.path.join(TEST_DATA_DIR, d))])
     print(f"Found {len(test_cases)} test cases in {TEST_DATA_DIR}")
 
-    # 3. 循环推理
     for case_name in tqdm(test_cases, desc="Inference"):
         inference_case(model, case_name, OUTPUT_DIR)
 
     print(f"\nInference Done! Results saved to {OUTPUT_DIR}")
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    main(args)
