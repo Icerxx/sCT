@@ -23,7 +23,7 @@ SAVE_DIR = "./checkpoints/meddino_sct"
 def parse_args():
     parser = argparse.ArgumentParser(description="Train MedDINO model")
     parser.add_argument("--batch", type=int, default=12, help="Batch size for training")
-    parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
+    parser.add_argument("--epoch", type=int, default=100, help="Number of training epochs")
     parser.add_argument("--img_size", type=int, default=512, help="Input image size")
     parser.add_argument("--freeze_encoder", action="store_false", help="Freeze encoder (ViT backbone) during training")
     return parser.parse_args()
@@ -61,7 +61,7 @@ def train(log_dir, args):
     print(f"Total Params: {total_params/1e6:.2f}M | Trainable: {trainable_count/1e6:.2f}M")
 
     optimizer = AdamW(trainable_params, lr=1e-5, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-7)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch, eta_min=1e-7)
 
     scaler = GradScaler()
     
@@ -73,10 +73,10 @@ def train(log_dir, args):
     fixed_cbct = fixed_vis_batch['cbct'].to(DEVICE)
     fixed_ct = fixed_vis_batch['ct'].to(DEVICE)
     
-    for epoch in range(args.epochs):
+    for epoch in range(args.epoch):
         model.train()
         train_loss = 0
-        loop = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")
+        loop = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epoch}")
         
         for batch in loop:
             cbct = batch['cbct'].to(DEVICE)  # (B, 3, H, W)
