@@ -57,6 +57,20 @@ class AdaptiveSkipProjector(nn.Module):
         x = self.compressor(x) # -> (B, out_dim, H, W)
         x = self.upsampler(x)  # -> (B, out_dim, H*scale, W*scale)
         return x
+
+class InputEncoder(nn.Module):
+    def __init__(self, in_chans=3, out_chans=32):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_chans, out_chans, kernel_size=3, padding=1),
+            LayerNorm2d(out_chans),
+            nn.GELU(),
+            nn.Conv2d(out_chans, out_chans, kernel_size=3, padding=1),
+            LayerNorm2d(out_chans),
+            nn.GELU()
+        )
+    def forward(self, x):
+        return self.conv(x)
     
 class DecoderBlock(nn.Module):
     def __init__(self, in_channels, skip_channels, out_channels):
@@ -66,11 +80,11 @@ class DecoderBlock(nn.Module):
         # 拼接后的通道数
         self.conv1 = nn.Conv2d(in_channels + skip_channels, out_channels, kernel_size=3, padding=1)
         # self.bn1 = nn.BatchNorm2d(out_channels)
-        self.bn1 = LayerNorm2d(out_channels)
+        self.ln1 = LayerNorm2d(out_channels)
         self.relu = nn.ReLU(inplace=True)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
         # self.bn2 = nn.BatchNorm2d(out_channels)
-        self.bn2 = LayerNorm2d(out_channels)
+        self.ln2 = LayerNorm2d(out_channels)
         
     def forward(self, x, skip=None):
         # upsample
@@ -80,10 +94,10 @@ class DecoderBlock(nn.Module):
             x = torch.cat([x, skip], dim=1)
             
         x = self.conv1(x)
-        x = self.bn1(x)
+        x = self.ln1(x)
         x = self.relu(x)
         x = self.conv2(x)
-        x = self.bn2(x)
+        x = self.ln2(x)
         x = self.relu(x)
         return x
 
@@ -113,12 +127,14 @@ class MedDINOGenerator(nn.Module):
         else:
             print("Warning: No pretrained weights loaded!")
 
-        # Skip 3 (Layer 9): 22 -> 44 (2x)
+        # Skip 3 (Layer 9): 32 -> 64 (2x)
         self.skip_proj3 = AdaptiveSkipProjector(embed_dim, 256, scale_factor=2)
-        # Skip 2 (Layer 6): 22 -> 88 (4x)
+        # Skip 2 (Layer 6): 32 -> 128 (4x)
         self.skip_proj2 = AdaptiveSkipProjector(embed_dim, 128, scale_factor=4)
-        # Skip 1 (Layer 3): 22 -> 176 (8x)
-        self.skip_proj1 = AdaptiveSkipProjector(embed_dim, 64, scale_factor=8)
+        # Skip 1 (Layer 3): 32 -> 256 (8x)
+        # self.skip_proj1 = AdaptiveSkipProjector(embed_dim, 64, scale_factor=8)
+
+        self.input_skip = InputEncoder(in_chans=3, out_chans=32)
 
         # self.bottleneck_conv = nn.Conv2d(embed_dim, 512, kernel_size=3, padding=1)
         self.bottleneck_conv = nn.Sequential(
@@ -133,12 +149,20 @@ class MedDINOGenerator(nn.Module):
         # Layer 3: 1/8 -> 1/4
         self.decoder3 = DecoderBlock(in_channels=256, skip_channels=128, out_channels=128)
         # Layer 2: 1/4 -> 1/2
-        self.decoder2 = DecoderBlock(in_channels=128, skip_channels=64, out_channels=64)
+        # self.decoder2 = DecoderBlock(in_channels=128, skip_channels=64, out_channels=64)
+        self.decoder2 = DecoderBlock(in_channels=128, skip_channels=0, out_channels=64)
         # Layer 1: 1/2 -> 1/1
-        self.decoder1 = DecoderBlock(in_channels=64, skip_channels=3, out_channels=32)
+        # self.decoder1 = DecoderBlock(in_channels=64, skip_channels=32, out_channels=32)
+        self.decoder1 = DecoderBlock(in_channels=64, skip_channels=32, out_channels=64)
         
         # 输出层
-        self.out_conv = nn.Conv2d(32, out_chans, kernel_size=1)
+        # self.out_conv = nn.Conv2d(32, out_chans, kernel_size=1)
+        self.out_conv = nn.Sequential(
+            nn.Conv2d(64, 32, kernel_size=3, padding=1),
+            LayerNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, out_chans, kernel_size=1)
+        )
 
     def forward(self, x):
         # x: (B, 1, H, W)
@@ -146,35 +170,38 @@ class MedDINOGenerator(nn.Module):
         if x.shape[1] == 1:
             x = x.repeat(1, 3, 1, 1)
         x_in = x
+        x_feat = self.input_skip(x_in)
 
         # --- Encoder ---
         # 提取 ViT 中间层的索引 (用于 Skip Connection)
         # ViT-Base 有 12 层 transformer blocks。
         # 我们通常取第 3, 6, 9, 12 层的输出
-        # ViT 的输出特征图尺寸: (B, Embed_Dim, H/16, W/16) -> (B, 768, 22, 22)
+        # ViT 的输出特征图尺寸: (B, Embed_Dim, H/16, W/16)
         z3, z6, z9, z12 = self.encoder.get_intermediate_layers(x, n=[2, 5, 8, 11], reshape=True)
         # bottleneck, skip3, skip2, skip1 = features[::-1]
         
         # --- Project Skips (将 ViT 特征放大到对应尺寸) ---
-        skip3 = self.skip_proj3(z9) # 22 -> 44
-        skip2 = self.skip_proj2(z6) # 22 -> 88
-        skip1 = self.skip_proj1(z3) # 22 -> 176
+        skip3 = self.skip_proj3(z9) # 32 -> 64
+        skip2 = self.skip_proj2(z6) # 32 -> 128
+        # skip1 = self.skip_proj1(z3) # 32 -> 256
 
         # --- Decoder ---
-        x = self.bottleneck_conv(z12) # -> (B, 512, 22, 22)
+        x = self.bottleneck_conv(z12) # -> (B, 512, 32, 32)
         # print(f"bottleneck: {x.shape}")
         
-        x = self.decoder4(x, skip3) # Upsample to 44
+        x = self.decoder4(x, skip3) # Upsample to 64
         # print(f"decoder4: {x.shape}")
-        x = self.decoder3(x, skip2) # Upsample to 88
+        x = self.decoder3(x, skip2) # Upsample to 128
         # print(f"decoder3: {x.shape}")
-        x = self.decoder2(x, skip1) # Upsample to 176
+        # x = self.decoder2(x, skip1) # Upsample to 256
+        x = self.decoder2(x, None) # Upsample to 256
         # print(f"decoder2: {x.shape}")
-        x = self.decoder1(x, x_in) # Upsample to 352
+        x = self.decoder1(x, x_feat) # Upsample to 512
         # print(f"decoder1: {x.shape}")
         
         out = self.out_conv(x)
-        return out
+        # return out
+        return out + x_in.mean(dim=1, keepdim=True)  # Residual connection
 
 
 if __name__ == '__main__':
