@@ -22,10 +22,10 @@ SAVE_DIR = "./checkpoints/meddino_sct"
 # hyperparameters
 def parse_args():
     parser = argparse.ArgumentParser(description="Train MedDINO model")
-    parser.add_argument("--batch", type=int, default=12, help="Batch size for training")
+    parser.add_argument("--batch", type=int, default=32, help="Batch size for training")
     parser.add_argument("--epoch", type=int, default=100, help="Number of training epochs")
     parser.add_argument("--img_size", type=int, default=256, help="Input image size")
-    parser.add_argument("--freeze_encoder", action="store_false", help="Freeze encoder (ViT backbone) during training")
+    parser.add_argument("--unfreeze", action="store_true", help="Freeze encoder (ViT backbone) during training")
     return parser.parse_args()
 
 def train(log_dir, args):
@@ -41,12 +41,13 @@ def train(log_dir, args):
     # 2. Model
     model = MedDINOGenerator(img_size=args.img_size, pretrained_path=PRETRAINED_PATH).to(DEVICE)
 
-    if args.freeze_encoder:
+    if args.unfreeze:
+        print(">>> Mode: Full Fine-tuning (Encoder + Decoder).")
+
+    else:
         print(">>> Mode: Freezing Encoder (Backbone). Training Decoder only.")
         for param in model.encoder.parameters():
             param.requires_grad = False
-    else:
-        print(">>> Mode: Full Fine-tuning (Encoder + Decoder).")
     
     # 3. Loss & Optimizer
     criterion = CompositeLoss(
