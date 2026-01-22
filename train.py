@@ -24,7 +24,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train MedDINO model")
     parser.add_argument("--batch", type=int, default=12, help="Batch size for training")
     parser.add_argument("--epoch", type=int, default=100, help="Number of training epochs")
-    parser.add_argument("--img_size", type=int, default=512, help="Input image size")
+    parser.add_argument("--img_size", type=int, default=256, help="Input image size")
     parser.add_argument("--freeze_encoder", action="store_false", help="Freeze encoder (ViT backbone) during training")
     return parser.parse_args()
 
@@ -51,8 +51,8 @@ def train(log_dir, args):
     # 3. Loss & Optimizer
     criterion = CompositeLoss(
         l1_weight=1.0, 
-        grad_weight=0.5,
-        perceptual_weight=0.1
+        grad_weight=0,
+        perceptual_weight=0
         ).to(DEVICE)
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     
@@ -99,8 +99,8 @@ def train(log_dir, args):
             loop.set_postfix(loss=loss.item())
             writer.add_scalar('Loss/Train_Step', loss.item(), global_step)
             writer.add_scalar('Loss/Step_L1', loss_dict['l1'], global_step)
-            writer.add_scalar('Loss/Step_Perceptual', loss_dict['perceptual'], global_step)
-            writer.add_scalar('Loss/Step_Grad', loss_dict['grad'], global_step)
+            # writer.add_scalar('Loss/Step_Perceptual', loss_dict['perceptual'], global_step)
+            # writer.add_scalar('Loss/Step_Grad', loss_dict['grad'], global_step)
             global_step += 1
             
         avg_train_loss = train_loss / len(train_loader)

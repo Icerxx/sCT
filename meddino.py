@@ -24,8 +24,8 @@ class LayerNorm2d(nn.Module):
 class Upsample(nn.Module):
     def __init__(self, in_chans, out_chans, scale_factor=2):
         super().__init__()
-        # self.up = nn.ConvTranspose2d(in_chans, out_chans, kernel_size=2, stride=2)
-        self.up = nn.Upsample(scale_factor=scale_factor, mode='bilinear', align_corners=False)
+        self.up = nn.ConvTranspose2d(in_chans, out_chans, kernel_size=2, stride=2)
+        # self.up = nn.Upsample(scale_factor=scale_factor, mode='bilinear', align_corners=False)
         self.conv = nn.Sequential(nn.Conv2d(in_chans, out_chans, kernel_size=3, padding=1, bias=False),
                                 #   nn.BatchNorm2d(out_chans),
                                   LayerNorm2d(out_chans),
@@ -128,9 +128,9 @@ class MedDINOGenerator(nn.Module):
             print("Warning: No pretrained weights loaded!")
 
         # Skip 3 (Layer 9): 32 -> 64 (2x)
-        self.skip_proj3 = AdaptiveSkipProjector(embed_dim, 256, scale_factor=2)
+        # self.skip_proj3 = AdaptiveSkipProjector(embed_dim, 256, scale_factor=2)
         # Skip 2 (Layer 6): 32 -> 128 (4x)
-        self.skip_proj2 = AdaptiveSkipProjector(embed_dim, 128, scale_factor=4)
+        # self.skip_proj2 = AdaptiveSkipProjector(embed_dim, 128, scale_factor=4)
         # Skip 1 (Layer 3): 32 -> 256 (8x)
         # self.skip_proj1 = AdaptiveSkipProjector(embed_dim, 64, scale_factor=8)
 
@@ -145,9 +145,9 @@ class MedDINOGenerator(nn.Module):
         )
         
         # Layer 4: 1/16 -> 1/8
-        self.decoder4 = DecoderBlock(in_channels=512, skip_channels=256, out_channels=256)
+        self.decoder4 = DecoderBlock(in_channels=512, skip_channels=0, out_channels=256)
         # Layer 3: 1/8 -> 1/4
-        self.decoder3 = DecoderBlock(in_channels=256, skip_channels=128, out_channels=128)
+        self.decoder3 = DecoderBlock(in_channels=256, skip_channels=0, out_channels=128)
         # Layer 2: 1/4 -> 1/2
         # self.decoder2 = DecoderBlock(in_channels=128, skip_channels=64, out_channels=64)
         self.decoder2 = DecoderBlock(in_channels=128, skip_channels=0, out_channels=64)
@@ -181,17 +181,17 @@ class MedDINOGenerator(nn.Module):
         # bottleneck, skip3, skip2, skip1 = features[::-1]
         
         # --- Project Skips (将 ViT 特征放大到对应尺寸) ---
-        skip3 = self.skip_proj3(z9) # 32 -> 64
-        skip2 = self.skip_proj2(z6) # 32 -> 128
+        # skip3 = self.skip_proj3(z9) # 32 -> 64
+        # skip2 = self.skip_proj2(z6) # 32 -> 128
         # skip1 = self.skip_proj1(z3) # 32 -> 256
 
         # --- Decoder ---
         x = self.bottleneck_conv(z12) # -> (B, 512, 32, 32)
         # print(f"bottleneck: {x.shape}")
         
-        x = self.decoder4(x, skip3) # Upsample to 64
+        x = self.decoder4(x, None) # Upsample to 64
         # print(f"decoder4: {x.shape}")
-        x = self.decoder3(x, skip2) # Upsample to 128
+        x = self.decoder3(x, None) # Upsample to 128
         # print(f"decoder3: {x.shape}")
         # x = self.decoder2(x, skip1) # Upsample to 256
         x = self.decoder2(x, None) # Upsample to 256
@@ -206,13 +206,13 @@ class MedDINOGenerator(nn.Module):
 
 if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model = MedDINOGenerator(img_size=512).to(device)
+    model = MedDINOGenerator(img_size=256).to(device)
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total Params: {total_params/1e6:.2f}M | Trainable: \
           {(total_params-sum(p.numel() for p in model.encoder.parameters()))/1e6:.2f}M")
 
-    dummy_input = torch.randn(1, 1, 512, 512).to(device)
+    dummy_input = torch.randn(1, 1, 256, 256).to(device)
     output = model(dummy_input)
     print(f"Input: {dummy_input.shape}")
     print(f"Output: {output.shape}")

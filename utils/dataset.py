@@ -8,7 +8,7 @@ import random
 from tqdm import tqdm
 
 class SynthRADDataset(Dataset):
-    def __init__(self, root_dir, split='train', img_size=512, augment=False):
+    def __init__(self, root_dir, split='train', img_size=256, augment=False):
         self.root = root_dir
         self.split = split
         self.img_size = img_size
