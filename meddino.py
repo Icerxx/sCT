@@ -71,6 +71,79 @@ class InputEncoder(nn.Module):
         )
     def forward(self, x):
         return self.conv(x)
+
+class ResEncoderBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1):
+        super().__init__()
+        # 1. 卷积路径
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, stride=stride, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels) # Encoder通常用BN，也可以换LN
+        self.relu = nn.ReLU(inplace=True)
+        
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        
+        # 2. 下采样路径 (Shortcut)
+        # 如果 stride > 1 或者通道数改变，shortcut 需要用 1x1 卷积调整
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+        else:
+            self.shortcut = nn.Identity()
+
+    def forward(self, x):
+        residual = self.shortcut(x)
+        
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        
+        x = self.conv2(x)
+        x = self.bn2(x)
+        
+        x += residual
+        x = self.relu(x)
+        return x
+
+class CNNEncoder(nn.Module):
+    def __init__(self, in_chans=32, base_dim=64, layers=[2, 2, 2, 2]):
+        super().__init__()
+        # # Input: 32 (来自 InputEncoder)
+        
+        # Stage 1: 32 -> 64 (1/2 Res)
+        # 第一个 Block 负责降采样 (stride=2)，后续 Block 保持尺寸
+        self.layer1 = self._make_layer(in_chans, base_dim, layers[0], stride=2)
+        
+        # Stage 2: 64 -> 128 (1/4 Res)
+        self.layer2 = self._make_layer(base_dim, base_dim*2, layers[1], stride=2)
+        
+        # Stage 3: 128 -> 256 (1/8 Res)
+        self.layer3 = self._make_layer(base_dim*2, base_dim*4, layers[2], stride=2)
+        
+        # Stage 4: 256 -> 512 (1/16 Res)
+        self.layer4 = self._make_layer(base_dim*4, base_dim*8, layers[3], stride=2)
+
+    def _make_layer(self, in_channels, out_channels, blocks, stride):
+        layers = []
+        # 第一个 Block 处理维度变化和降采样
+        layers.append(ResEncoderBlock(in_channels, out_channels, stride=stride))
+        
+        # 后续 Block 保持维度，增加深度
+        for _ in range(1, blocks):
+            layers.append(ResEncoderBlock(out_channels, out_channels, stride=1))
+            
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        # 如果需要做 Skip Connection，可以返回中间结果
+        # 但目前我们只需要最后的 Bottleneck
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        return x
     
 class DecoderBlock(nn.Module):
     def __init__(self, in_channels, skip_channels, out_channels):
@@ -92,7 +165,8 @@ class DecoderBlock(nn.Module):
 
         if skip is not None:
             x = torch.cat([x, skip], dim=1)
-            
+
+        # modify: convnext block          
         x = self.conv1(x)
         x = self.ln1(x)
         x = self.relu(x)
@@ -105,12 +179,12 @@ class DecoderBlock(nn.Module):
 # 2. MedDINO sCT Generator
 # =================================================================
 class MedDINOGenerator(nn.Module):
-    def __init__(self, img_size=512, patch_size=16, out_chans=1, embed_dim=768, pretrained_path=None):
+    def __init__(self, img_size=256, patch_size=16, out_chans=1, embed_dim=768, pretrained_path=None):
         super().__init__()
         self.img_size = img_size
         self.patch_size = patch_size
         self.embed_dim = embed_dim
-        self.encoder = vit_base(img_size=img_size, patch_size=patch_size, 
+        self.vit_encoder = vit_base(img_size=img_size, patch_size=patch_size, 
                                 drop_path_rate=0.2, layerscale_init=1.0e-05, 
                                 n_storage_tokens=4, qkv_bias=False, mask_k_bias=True)
         # load pretrained weights
@@ -122,23 +196,24 @@ class MedDINOGenerator(nn.Module):
             state_dict = {k.replace('backbone.', ''): v for k, v in state_dict.items() 
                           if 'ibot' not in k and 'dino_head' not in k}  # 去掉 'backbone.' 前缀和 'ibot', 'dino_head' 相关参数
             
-            missing, unexpected = self.encoder.load_state_dict(state_dict, strict=True)
+            missing, unexpected = self.vit_encoder.load_state_dict(state_dict, strict=True)
             print(f"Loaded MedDINO weights with {len(missing)} missing and {len(unexpected)} unexpected keys.")
         else:
             print("Warning: No pretrained weights loaded!")
 
-        # Skip 3 (Layer 9): 32 -> 64 (2x)
+        # Skip 3 (Layer 9): 16 -> 32 (2x)
         # self.skip_proj3 = AdaptiveSkipProjector(embed_dim, 256, scale_factor=2)
-        # Skip 2 (Layer 6): 32 -> 128 (4x)
+        # Skip 2 (Layer 6): 16 -> 64 (4x)
         # self.skip_proj2 = AdaptiveSkipProjector(embed_dim, 128, scale_factor=4)
-        # Skip 1 (Layer 3): 32 -> 256 (8x)
+        # Skip 1 (Layer 3): 16 -> 128 (8x)
         # self.skip_proj1 = AdaptiveSkipProjector(embed_dim, 64, scale_factor=8)
 
         self.input_skip = InputEncoder(in_chans=3, out_chans=32)
+        self.cnn_encoder = CNNEncoder(in_chans=32, base_dim=64, layers=[2, 2, 2, 2])
 
         # self.bottleneck_conv = nn.Conv2d(embed_dim, 512, kernel_size=3, padding=1)
         self.bottleneck_conv = nn.Sequential(
-            nn.Conv2d(embed_dim, 512, kernel_size=3, padding=1),
+            nn.Conv2d(embed_dim+512, 512, kernel_size=3, padding=1),
             # nn.BatchNorm2d(512),
             LayerNorm2d(512),
             nn.ReLU(inplace=True)
@@ -177,26 +252,28 @@ class MedDINOGenerator(nn.Module):
         # ViT-Base 有 12 层 transformer blocks。
         # 我们通常取第 3, 6, 9, 12 层的输出
         # ViT 的输出特征图尺寸: (B, Embed_Dim, H/16, W/16)
-        z3, z6, z9, z12 = self.encoder.get_intermediate_layers(x, n=[2, 5, 8, 11], reshape=True)
-        # bottleneck, skip3, skip2, skip1 = features[::-1]
+        z3, z6, z9, z12 = self.vit_encoder.get_intermediate_layers(x, n=[2, 5, 8, 11], reshape=True)
+        cnn_feat = self.cnn_encoder(x_feat) # (B, 512, 16, 16)
         
         # --- Project Skips (将 ViT 特征放大到对应尺寸) ---
-        # skip3 = self.skip_proj3(z9) # 32 -> 64
-        # skip2 = self.skip_proj2(z6) # 32 -> 128
-        # skip1 = self.skip_proj1(z3) # 32 -> 256
+        # skip3 = self.skip_proj3(z9) # 16 -> 32
+        # skip2 = self.skip_proj2(z6) # 16 -> 64
+        # skip1 = self.skip_proj1(z3) # 16 -> 128
 
         # --- Decoder ---
-        x = self.bottleneck_conv(z12) # -> (B, 512, 32, 32)
+        bottleneck_fused = torch.cat([z12, cnn_feat], dim=1) # (B, 768+512, 16, 16)
+
+        # x = self.bottleneck_conv(z12) # -> (B, 512, 16, 16)
+        x = self.bottleneck_conv(bottleneck_fused) # -> (B, 512, 16, 16)
         # print(f"bottleneck: {x.shape}")
         
-        x = self.decoder4(x, None) # Upsample to 64
+        x = self.decoder4(x, None) # Upsample to 32
         # print(f"decoder4: {x.shape}")
-        x = self.decoder3(x, None) # Upsample to 128
+        x = self.decoder3(x, None) # Upsample to 64
         # print(f"decoder3: {x.shape}")
-        # x = self.decoder2(x, skip1) # Upsample to 256
-        x = self.decoder2(x, None) # Upsample to 256
+        x = self.decoder2(x, None) # Upsample to 128
         # print(f"decoder2: {x.shape}")
-        x = self.decoder1(x, x_feat) # Upsample to 512
+        x = self.decoder1(x, x_feat) # Upsample to 256
         # print(f"decoder1: {x.shape}")
         
         out = self.out_conv(x)
@@ -210,7 +287,7 @@ if __name__ == '__main__':
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total Params: {total_params/1e6:.2f}M | Trainable: \
-          {(total_params-sum(p.numel() for p in model.encoder.parameters()))/1e6:.2f}M")
+          {(total_params-sum(p.numel() for p in model.vit_encoder.parameters()))/1e6:.2f}M")
 
     dummy_input = torch.randn(1, 1, 256, 256).to(device)
     output = model(dummy_input)

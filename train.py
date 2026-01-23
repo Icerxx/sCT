@@ -46,7 +46,7 @@ def train(log_dir, args):
 
     else:
         print(">>> Mode: Freezing Encoder (Backbone). Training Decoder only.")
-        for param in model.encoder.parameters():
+        for param in model.vit_encoder.parameters():
             param.requires_grad = False
     
     # 3. Loss & Optimizer
