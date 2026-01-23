@@ -23,8 +23,8 @@ NORM_MAX_HU = 1500.0
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Inference for MedDINO model")
-    parser.add_argument("--img_size", type=int, default=512, help="Input image size (must match training)")
-    parser.add_argument("--batch", type=int, default=16, help="Batch size for inference")
+    parser.add_argument("--img_size", type=int, default=256, help="Input image size (must match training)")
+    parser.add_argument("--batch", type=int, default=32, help="Batch size for inference")
     parser.add_argument("--model", type=str, default="best_model.pth", help="ROOT/checkpoints/meddino_sct")
     return parser.parse_args()
 
@@ -32,7 +32,7 @@ def preprocess_batch(vol_slice_np):
     """
     对原始 HU 切片进行预处理，匹配训练时的逻辑
     Input: (B, H, W) numpy, int16 or float
-    Output: (B, 3, 512, 512) tensor
+    Output: (B, 3, 256, 256) tensor
     """
     # 1. 转 float32
     vol = vol_slice_np.astype(np.float32)
@@ -51,7 +51,7 @@ def preprocess_batch(vol_slice_np):
         scaled = scaled[np.newaxis, ...]
     tensor = torch.from_numpy(scaled).float().unsqueeze(1)
     
-    # 4. Resize 到训练尺寸 (512x512)
+    # 4. Resize 到训练尺寸
     # 这一步对应训练时的 F.interpolate
     tensor = F.interpolate(tensor, size=(args.img_size, args.img_size), mode='bilinear', align_corners=False)
     
@@ -63,11 +63,11 @@ def preprocess_batch(vol_slice_np):
 def postprocess_batch(pred_tensor, original_hw):
     """
     后处理：恢复尺寸和 HU 值
-    Input: (B, 1, 512, 512) tensor
+    Input: (B, 1, 256, 256) tensor
     Output: (B, OrigH, OrigW) numpy
     """
     # 1. Resize 回原始尺寸 (OrigH, OrigW)
-    # pred_tensor: (B, 1, 512, 512)
+    # pred_tensor: (B, 1, 256, 256)
     # original_hw: (H, W)
     pred_resized = F.interpolate(pred_tensor, size=original_hw, mode='bilinear', align_corners=False)
     
@@ -121,12 +121,12 @@ def inference_case(model, case_name, save_root):
             # 取出一个 Batch 的切片: (B, H, W)
             batch_slice_np = origin_vol[i : i + args.batch]
             
-            # 预处理 (含归一化 + Resize 512 + 转3通道)
+            # 预处理 (含归一化 + Resize 256 + 转3通道)
             batch_tensor = preprocess_batch(batch_slice_np)
             batch_tensor = batch_tensor.to(DEVICE)
             
             # Forward
-            pred = model(batch_tensor) # (B, 1, 512, 512)
+            pred = model(batch_tensor) # (B, 1, 256, 256)
             
             # 后处理 (含 Resize 回原尺寸 + 反归一化)
             pred_hu_np = postprocess_batch(pred, raw_size_hw)
