@@ -153,6 +153,9 @@ def train(log_dir, save_dir, args):
 
         torch.save(model.state_dict(), os.path.join(save_dir, "final_model.pth"))
 
+        if epoch + 1 == 30:
+            torch.save(model.state_dict(), os.path.join(save_dir, "epoch_30.pth"))
+
     writer.close()
 
 if __name__ == "__main__":
