@@ -17,7 +17,6 @@ from utils.loss import CompositeLoss
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PRETRAINED_PATH = os.path.join(ROOT, "model.pth")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-SAVE_DIR = "./checkpoints/meddino_sct"
 
 # hyperparameters
 def parse_args():
@@ -26,9 +25,10 @@ def parse_args():
     parser.add_argument("--epoch", type=int, default=100, help="Number of training epochs")
     parser.add_argument("--img_size", type=int, default=256, help="Input image size")
     parser.add_argument("--unfreeze", action="store_true", help="Freeze encoder (ViT backbone) during training")
+    parser.add_argument("--gpu", type=int, default=0, help="Specify GPU ID to use (default: 0)")
     return parser.parse_args()
 
-def train(log_dir, args):
+def train(log_dir, save_dir, args):
     writer = SummaryWriter(log_dir=log_dir)
 
     # 1. Dataset & Loader
@@ -148,18 +148,22 @@ def train(log_dir, args):
         # Checkpoint
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), os.path.join(SAVE_DIR, "best_model.pth"))
+            torch.save(model.state_dict(), os.path.join(save_dir, "best_model.pth"))
             print("Saved Best Model!")
 
-        torch.save(model.state_dict(), os.path.join(SAVE_DIR, "final_model.pth"))
+        torch.save(model.state_dict(), os.path.join(save_dir, "final_model.pth"))
 
     writer.close()
 
 if __name__ == "__main__":
     args = parse_args()
-    LOG_DIR = os.path.join(ROOT, "log", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    LOG_DIR = os.path.join(ROOT, "log", timestamp)
+    SAVE_DIR = os.path.join(ROOT, "checkpoints", timestamp)
     
     os.makedirs(SAVE_DIR, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
     
-    train(LOG_DIR, args)
+    train(LOG_DIR, SAVE_DIR, args)
