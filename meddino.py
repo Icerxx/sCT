@@ -72,7 +72,7 @@ class AdaptiveSkipProjector(nn.Module):
         x = self.upsampler(x)  # -> (B, out_dim, H*scale, W*scale)
         return x
 
-class InputEncoder(nn.Module):
+class ConvStem(nn.Module):
     def __init__(self, in_chans=3, out_chans=32):
         super().__init__()
         self.conv = nn.Sequential(
@@ -261,7 +261,7 @@ class MedDINOGenerator(nn.Module):
         # Skip 1 (Layer 3): 16 -> 128 (8x)
         # self.skip_proj1 = AdaptiveSkipProjector(embed_dim, 64, scale_factor=8)
 
-        self.input_skip = InputEncoder(in_chans=3, out_chans=32)
+        self.input_skip = ConvStem(in_chans=3, out_chans=32)
         self.cnn_encoder = CNNEncoder(in_chans=32, base_dim=96, layers=[2, 2, 2, 2])
 
         # self.bottleneck_conv = nn.Conv2d(embed_dim, 512, kernel_size=3, padding=1)
@@ -272,14 +272,12 @@ class MedDINOGenerator(nn.Module):
         )
         
         # Layer 4: 1/16 -> 1/8
-        self.decoder4 = DecoderBlock(in_channels=768, skip_channels=0, out_channels=384, num_blocks=2)
+        self.decoder4 = DecoderBlock(in_channels=768, skip_channels=384, out_channels=384, num_blocks=2)
         # Layer 3: 1/8 -> 1/4
-        self.decoder3 = DecoderBlock(in_channels=384, skip_channels=0, out_channels=192, num_blocks=2)
+        self.decoder3 = DecoderBlock(in_channels=384, skip_channels=192, out_channels=192, num_blocks=2)
         # Layer 2: 1/4 -> 1/2
-        # self.decoder2 = DecoderBlock(in_channels=128, skip_channels=64, out_channels=64)
-        self.decoder2 = DecoderBlock(in_channels=192, skip_channels=0, out_channels=96, num_blocks=2)
+        self.decoder2 = DecoderBlock(in_channels=192, skip_channels=96, out_channels=96, num_blocks=2)
         # Layer 1: 1/2 -> 1/1
-        # self.decoder1 = DecoderBlock(in_channels=64, skip_channels=32, out_channels=32)
         self.decoder1 = DecoderBlock(in_channels=96, skip_channels=32, out_channels=64, num_blocks=2)
         
         # 输出层
@@ -305,7 +303,9 @@ class MedDINOGenerator(nn.Module):
         # 我们通常取第 3, 6, 9, 12 层的输出
         # ViT 的输出特征图尺寸: (B, Embed_Dim, H/16, W/16)
         z3, z6, z9, z12 = self.vit_encoder.get_intermediate_layers(x, n=[2, 5, 8, 11], reshape=True)
-        _, _, _, cnn_feat = self.cnn_encoder(x_feat) # (B, 512, 16, 16)
+        # print(f"ViT features: z3:{z3.shape}, z6:{z6.shape}, z9:{z9.shape}, z12:{z12.shape}")
+        c1, c2, c3, c4 = self.cnn_encoder(x_feat) # 128 -> 64 -> 32 -> 16
+        # print(f"CNN features: c1:{c1.shape}, c2:{c2.shape}, c3:{c3.shape}, c4:{c4.shape}")
         
         # --- Project Skips (将 ViT 特征放大到对应尺寸) ---
         # skip3 = self.skip_proj3(z9) # 16 -> 32
@@ -313,18 +313,17 @@ class MedDINOGenerator(nn.Module):
         # skip1 = self.skip_proj1(z3) # 16 -> 128
 
         # --- Decoder ---
-        bottleneck_fused = torch.cat([z12, cnn_feat], dim=1) # (B, 768+512, 16, 16)
+        bottleneck_fused = torch.cat([z12, c4], dim=1) # (B, 768+768, 16, 16)
 
         # x = self.bottleneck_conv(z12) # -> (B, 512, 16, 16)
         # x = self.bottleneck_conv(cnn_feat) # -> (B, 512, 16, 16)
-        x = self.bottleneck_conv(bottleneck_fused) # -> (B, 512, 16, 16)
-        # print(f"bottleneck: {x.shape}")
+        x = self.bottleneck_conv(bottleneck_fused) # -> (B, 768, 16, 16)
         
-        x = self.decoder4(x, None) # Upsample to 32
+        x = self.decoder4(x, skip=c3) # Upsample to 32
         # print(f"decoder4: {x.shape}")
-        x = self.decoder3(x, None) # Upsample to 64
+        x = self.decoder3(x, skip=c2) # Upsample to 64
         # print(f"decoder3: {x.shape}")
-        x = self.decoder2(x, None) # Upsample to 128
+        x = self.decoder2(x, skip=c1) # Upsample to 128
         # print(f"decoder2: {x.shape}")
         x = self.decoder1(x, x_feat) # Upsample to 256
         # print(f"decoder1: {x.shape}")
