@@ -266,7 +266,7 @@ class MedDINOGenerator(nn.Module):
 
         # self.bottleneck_conv = nn.Conv2d(embed_dim, 512, kernel_size=3, padding=1)
         self.bottleneck_conv = nn.Sequential(
-            nn.Conv2d(embed_dim, 768, kernel_size=3, padding=1),
+            nn.Conv2d(embed_dim + 768, 768, kernel_size=3, padding=1),
             LayerNorm2d(768),
             nn.GELU()
         )
@@ -304,7 +304,7 @@ class MedDINOGenerator(nn.Module):
         # ViT-Base 有 12 层 transformer blocks。
         # 我们通常取第 3, 6, 9, 12 层的输出
         # ViT 的输出特征图尺寸: (B, Embed_Dim, H/16, W/16)
-        # z3, z6, z9, z12 = self.vit_encoder.get_intermediate_layers(x, n=[2, 5, 8, 11], reshape=True)
+        z3, z6, z9, z12 = self.vit_encoder.get_intermediate_layers(x, n=[2, 5, 8, 11], reshape=True)
         _, _, _, cnn_feat = self.cnn_encoder(x_feat) # (B, 512, 16, 16)
         
         # --- Project Skips (将 ViT 特征放大到对应尺寸) ---
@@ -313,11 +313,11 @@ class MedDINOGenerator(nn.Module):
         # skip1 = self.skip_proj1(z3) # 16 -> 128
 
         # --- Decoder ---
-        # bottleneck_fused = torch.cat([z12, cnn_feat], dim=1) # (B, 768+512, 16, 16)
+        bottleneck_fused = torch.cat([z12, cnn_feat], dim=1) # (B, 768+512, 16, 16)
 
         # x = self.bottleneck_conv(z12) # -> (B, 512, 16, 16)
-        x = self.bottleneck_conv(cnn_feat) # -> (B, 512, 16, 16)
-        # x = self.bottleneck_conv(bottleneck_fused) # -> (B, 512, 16, 16)
+        # x = self.bottleneck_conv(cnn_feat) # -> (B, 512, 16, 16)
+        x = self.bottleneck_conv(bottleneck_fused) # -> (B, 512, 16, 16)
         # print(f"bottleneck: {x.shape}")
         
         x = self.decoder4(x, None) # Upsample to 32
