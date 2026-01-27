@@ -228,6 +228,155 @@ class DecoderBlock(nn.Module):
         x = self.blocks(x)
         return x
 
+class ViTFeatureAggregator(nn.Module):
+    def __init__(self, in_dims=[768, 768, 768, 768], out_dim=768):
+        super().__init__()
+        total_dim = sum(in_dims)
+        
+        # 1. 压缩通道
+        self.conv = nn.Conv2d(total_dim, out_dim, kernel_size=1)
+        
+        # 2. 通道注意力 (SE-Block Style)
+        # 动态决定哪些层的特征更重要
+        self.se = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(out_dim, out_dim // 16, 1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_dim // 16, out_dim, 1),
+            nn.Sigmoid()
+        )
+        
+        self.norm = LayerNorm2d(out_dim)
+
+    def forward(self, features_list):
+        # features_list: [z3, z6, z9, z12]
+        
+        # 拼接
+        x = torch.cat(features_list, dim=1) # (B, 4*768, H, W)
+        
+        # 融合
+        x = self.conv(x)
+        
+        # 加权
+        w = self.se(x)
+        x = x * w
+        
+        x = self.norm(x)
+        return x
+
+class ViTTokenMoE(nn.Module):
+    def __init__(self, in_dim=768, num_experts=4, hidden_dim=256):
+        """
+        Args:
+            in_dim: 单个 ViT 层的通道数 (768)
+            num_experts: ViT 层数 (4: z3, z6, z9, z12)
+            hidden_dim: Router 的隐藏层维度 (轻量化)
+        """
+        super().__init__()
+        self.num_experts = num_experts
+        
+        # --- Router (Gating Network) ---
+        # 输入: 所有专家的特征拼接 (B, 4*768, H, W)
+        # 任务: 为每个像素点预测 4 个权重
+        self.pre_reduce = nn.Conv2d(in_dim, 128, 1)
+        self.router = nn.Sequential(
+            # 1. 压缩特征，提取路由信息
+            nn.Conv2d(128 * num_experts, hidden_dim, kernel_size=1, bias=False),
+            LayerNorm2d(hidden_dim),
+            nn.GELU(),
+            
+            # 2. 预测 Logits
+            nn.Conv2d(hidden_dim, num_experts, kernel_size=1, bias=True)
+        )
+        
+        # 最后的融合层 (可选，用于平滑聚合后的特征)
+        self.project = nn.Sequential(
+            nn.Conv2d(in_dim, in_dim, kernel_size=3, padding=1, groups=in_dim), # Depthwise
+            LayerNorm2d(in_dim),
+            nn.Conv2d(in_dim, in_dim, kernel_size=1) # Pointwise
+        )
+
+    def forward(self, features_list):
+        """
+        Args:
+            features_list: List of [z3, z6, z9, z12], each (B, C, H, W)
+        Returns:
+            z_agg: (B, C, H, W)
+        """
+        reduced_feats = []
+        for feat in features_list:
+            reduced_feats.append(self.pre_reduce(feat)) # 共享降维
+
+        router_input = torch.cat(reduced_feats, dim=1) # (B, 256, H, W)
+        
+        # 计算路由权重 (Gating Weights)
+        # logits: (B, 4, H, W)
+        gate_logits = self.router(router_input)
+        
+        # Softmax 归一化: 在 Expert 维度 (dim=1) 做
+        # weights: (B, 4, H, W)
+        gate_weights = F.softmax(gate_logits, dim=1)
+        
+        # 加权聚合 (Weighted Sum)
+        # (B, 4, 1, H, W) * (B, 4, C, H, W) -> sum dim 1 -> (B, C, H, W)
+        # 这是一个 Token-wise (Pixel-wise) 的加权
+        expert_features = torch.stack(features_list, dim=1) 
+        z_agg = (gate_weights.unsqueeze(2) * expert_features).sum(dim=1)
+        
+        # 特征平滑/投影
+        z_agg = self.project(z_agg)
+        
+        # (可选) 返回权重用于可视化，写论文时画热力图很有用！
+        # return z_agg, gate_weights 
+        return z_agg
+    
+class CNNAttendedViT(nn.Module):
+    def __init__(self, dim, num_heads=8):
+        super().__init__()
+        self.num_heads = num_heads
+        self.scale = (dim // num_heads) ** -0.5
+        
+        # Q, K, V Projections
+        self.to_q = nn.Conv2d(dim, dim, 1, bias=False) # CNN Input
+        self.to_k = nn.Conv2d(dim, dim, 1, bias=False) # ViT Input
+        self.to_v = nn.Conv2d(dim, dim, 1, bias=False) # ViT Input
+        
+        self.proj = nn.Conv2d(dim, dim, 1)
+        self.norm = LayerNorm2d(dim)
+
+    def forward(self, cnn_feat, vit_feat):
+        """
+        cnn_feat: (B, C, H, W) -> Query
+        vit_feat: (B, C, H, W) -> Key, Value
+        """
+        B, C, H, W = cnn_feat.shape
+        residual = cnn_feat
+        
+        # 生成 Q, K, V
+        # Reshape to (B, Heads, N, C_head)
+        # N = H*W
+        q = self.to_q(cnn_feat).flatten(2).transpose(1, 2)
+        k = self.to_k(vit_feat).flatten(2).transpose(1, 2)
+        v = self.to_v(vit_feat).flatten(2).transpose(1, 2)
+        
+        q = q.reshape(B, H*W, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        k = k.reshape(B, H*W, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        v = v.reshape(B, H*W, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        
+        # Attention Calculation
+        # (B, Heads, N, N)
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        
+        # Weighted Sum
+        out = (attn @ v).transpose(1, 2).reshape(B, H*W, C).transpose(1, 2).view(B, C, H, W)
+        
+        out = self.proj(out)
+        out = self.norm(out)
+        
+        # or residual + lamba * out
+        return residual + out
+    
 # =================================================================
 # 2. MedDINO sCT Generator
 # =================================================================
@@ -264,13 +413,15 @@ class MedDINOGenerator(nn.Module):
         self.input_skip = ConvStem(in_chans=3, out_chans=32)
         self.cnn_encoder = CNNEncoder(in_chans=32, base_dim=96, layers=[2, 2, 2, 2])
 
-        # self.bottleneck_conv = nn.Conv2d(embed_dim, 512, kernel_size=3, padding=1)
-        self.bottleneck_conv = nn.Sequential(
-            nn.Conv2d(embed_dim + 768, 768, kernel_size=3, padding=1),
-            LayerNorm2d(768),
-            nn.GELU()
-        )
-        
+        # self.bottleneck_conv = nn.Sequential(
+        #     nn.Conv2d(embed_dim + 768, 768, kernel_size=3, padding=1),
+        #     LayerNorm2d(768),
+        #     nn.GELU()
+        # )
+        # self.vit_aggregator = ViTFeatureAggregator(in_dims=[768]*4, out_dim=768)
+        self.vit_aggregator = ViTTokenMoE(in_dim=768, num_experts=4, hidden_dim=256)
+        self.cross_fusion = CNNAttendedViT(dim=768)
+
         # Layer 4: 1/16 -> 1/8
         self.decoder4 = DecoderBlock(in_channels=768, skip_channels=384, out_channels=384, num_blocks=2)
         # Layer 3: 1/8 -> 1/4
@@ -313,13 +464,15 @@ class MedDINOGenerator(nn.Module):
         # skip1 = self.skip_proj1(z3) # 16 -> 128
 
         # --- Decoder ---
-        bottleneck_fused = torch.cat([z12, c4], dim=1) # (B, 768+768, 16, 16)
+        # bottleneck_fused = torch.cat([z12, c4], dim=1) # (B, 768+768, 16, 16)
+        z_agg = self.vit_aggregator([z3, z6, z9, z12])  # (B, 768, 16, 16)
 
-        # x = self.bottleneck_conv(z12) # -> (B, 512, 16, 16)
-        # x = self.bottleneck_conv(cnn_feat) # -> (B, 512, 16, 16)
-        x = self.bottleneck_conv(bottleneck_fused) # -> (B, 768, 16, 16)
+        # bottleneck = self.bottleneck_conv(z12) # -> (B, 512, 16, 16)
+        # bottleneck = self.bottleneck_conv(c4) # -> (B, 512, 16, 16)
+        # bottleneck = self.bottleneck_conv(bottleneck_fused) # -> (B, 768, 16, 16)
+        bottleneck = self.cross_fusion(cnn_feat=c4, vit_feat=z_agg)  # (B, 768, 16, 16)
         
-        x = self.decoder4(x, skip=c3) # Upsample to 32
+        x = self.decoder4(bottleneck, skip=c3) # Upsample to 32
         # print(f"decoder4: {x.shape}")
         x = self.decoder3(x, skip=c2) # Upsample to 64
         # print(f"decoder3: {x.shape}")
