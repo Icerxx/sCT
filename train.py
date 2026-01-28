@@ -16,7 +16,6 @@ from utils.loss import CompositeLoss
 # global configs
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PRETRAINED_PATH = os.path.join(ROOT, "model.pth")
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # hyperparameters
 def parse_args():
@@ -28,7 +27,7 @@ def parse_args():
     parser.add_argument("--gpu", type=int, default=0, help="Specify GPU ID to use (default: 0)")
     return parser.parse_args()
 
-def train(log_dir, save_dir, args):
+def train(log_dir, save_dir, args, device):
     writer = SummaryWriter(log_dir=log_dir)
 
     # 1. Dataset & Loader
@@ -39,7 +38,7 @@ def train(log_dir, save_dir, args):
     val_loader = DataLoader(val_ds, batch_size=args.batch, shuffle=False, num_workers=4, pin_memory=True)
 
     # 2. Model
-    model = MedDINOGenerator(img_size=args.img_size, pretrained_path=PRETRAINED_PATH).to(DEVICE)
+    model = MedDINOGenerator(img_size=args.img_size, pretrained_path=PRETRAINED_PATH).to(device)
 
     if args.unfreeze:
         print(">>> Mode: Full Fine-tuning (Encoder + Decoder).")
@@ -54,7 +53,7 @@ def train(log_dir, save_dir, args):
         l1_weight=1.0, 
         grad_weight=0,
         perceptual_weight=0
-        ).to(DEVICE)
+        ).to(device)
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     
     total_params = sum(p.numel() for p in model.parameters())
@@ -71,8 +70,8 @@ def train(log_dir, save_dir, args):
     global_step = 0
 
     fixed_vis_batch = next(iter(val_loader))
-    fixed_cbct = fixed_vis_batch['cbct'].to(DEVICE)
-    fixed_ct = fixed_vis_batch['ct'].to(DEVICE)
+    fixed_cbct = fixed_vis_batch['cbct'].to(device)
+    fixed_ct = fixed_vis_batch['ct'].to(device)
     
     for epoch in range(args.epoch):
         model.train()
@@ -80,8 +79,8 @@ def train(log_dir, save_dir, args):
         loop = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epoch}")
         
         for batch in loop:
-            cbct = batch['cbct'].to(DEVICE)  # (B, 3, H, W)
-            ct = batch['ct'].to(DEVICE)  # (B, 1, H, W)
+            cbct = batch['cbct'].to(device)  # (B, 3, H, W)
+            ct = batch['ct'].to(device)  # (B, 1, H, W)
             
             optimizer.zero_grad()
             # Forward
@@ -116,8 +115,8 @@ def train(log_dir, save_dir, args):
         val_loss = 0
         with torch.no_grad():
             for batch in val_loader:
-                cbct = batch['cbct'].to(DEVICE)
-                ct = batch['ct'].to(DEVICE)
+                cbct = batch['cbct'].to(device)
+                ct = batch['ct'].to(device)
 
                 with autocast("cuda"):
                     pred = model(cbct)
@@ -161,6 +160,7 @@ def train(log_dir, save_dir, args):
 if __name__ == "__main__":
     args = parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     LOG_DIR = os.path.join(ROOT, "log", timestamp)
@@ -169,4 +169,4 @@ if __name__ == "__main__":
     os.makedirs(SAVE_DIR, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
     
-    train(LOG_DIR, SAVE_DIR, args)
+    train(LOG_DIR, SAVE_DIR, args, device)
