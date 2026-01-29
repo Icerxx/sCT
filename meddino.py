@@ -331,7 +331,7 @@ class ViTTokenMoE(nn.Module):
         return z_agg
     
 class CNNAttendedViT(nn.Module):
-    def __init__(self, dim, num_heads=8):
+    def __init__(self, dim, num_heads=8, feat_size=16):
         super().__init__()
         self.num_heads = num_heads
         self.scale = (dim // num_heads) ** -0.5
@@ -340,9 +340,16 @@ class CNNAttendedViT(nn.Module):
         self.to_q = nn.Conv2d(dim, dim, 1, bias=False) # CNN Input
         self.to_k = nn.Conv2d(dim, dim, 1, bias=False) # ViT Input
         self.to_v = nn.Conv2d(dim, dim, 1, bias=False) # ViT Input
+
+        self.pos_embed = nn.Parameter(torch.randn(1, dim, feat_size, feat_size))
         
-        self.proj = nn.Conv2d(dim, dim, 1)
-        self.norm = LayerNorm2d(dim)
+        # self.proj = nn.Conv2d(dim, dim, 1)
+        # self.norm = LayerNorm2d(dim)
+        self.fusion_conv = nn.Sequential(
+            nn.Conv2d(dim * 2, dim, kernel_size=3, padding=1, bias=False), # 3x3
+            LayerNorm2d(dim),
+            nn.GELU() # 增加非线性
+        )
 
     def forward(self, cnn_feat, vit_feat):
         """
@@ -352,11 +359,18 @@ class CNNAttendedViT(nn.Module):
         B, C, H, W = cnn_feat.shape
         residual = cnn_feat
         
+        if self.pos_embed.shape[2:] != (H, W):
+            pos_resized = F.interpolate(self.pos_embed, size=(H, W), mode='bilinear')
+        else:
+            pos_resized = self.pos_embed
+
+        q_in = cnn_feat + pos_resized
+        k_in = vit_feat + pos_resized
         # 生成 Q, K, V
         # Reshape to (B, Heads, N, C_head)
         # N = H*W
-        q = self.to_q(cnn_feat).flatten(2).transpose(1, 2)
-        k = self.to_k(vit_feat).flatten(2).transpose(1, 2)
+        q = self.to_q(q_in).flatten(2).transpose(1, 2)
+        k = self.to_k(k_in).flatten(2).transpose(1, 2)
         v = self.to_v(vit_feat).flatten(2).transpose(1, 2)
         
         q = q.reshape(B, H*W, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
@@ -371,12 +385,13 @@ class CNNAttendedViT(nn.Module):
         # Weighted Sum
         out = (attn @ v).transpose(1, 2).reshape(B, H*W, C).transpose(1, 2).view(B, C, H, W)
         
-        out = self.proj(out)
-        out = self.norm(out)
+        # out = self.proj(out)
+        # out = self.norm(out)
         
         # or residual + lamba * out
-        return residual + out
-    
+        # return residual + out
+        return self.fusion_conv(torch.cat([cnn_feat, out], dim=1))
+
 # =================================================================
 # 2. MedDINO sCT Generator
 # =================================================================
@@ -413,11 +428,11 @@ class MedDINOGenerator(nn.Module):
         self.input_skip = ConvStem(in_chans=3, out_chans=32)
         self.cnn_encoder = CNNEncoder(in_chans=32, base_dim=96, layers=[2, 2, 2, 2])
 
-        # self.bottleneck_conv = nn.Sequential(
-        #     nn.Conv2d(embed_dim + 768, 768, kernel_size=3, padding=1),
-        #     LayerNorm2d(768),
-        #     nn.GELU()
-        # )
+        self.bottleneck_conv = nn.Sequential(
+            nn.Conv2d(embed_dim + 768, 768, kernel_size=3, padding=1),
+            LayerNorm2d(768),
+            nn.GELU()
+        )
         # self.vit_aggregator = ViTFeatureAggregator(in_dims=[768]*4, out_dim=768)
         self.vit_aggregator = ViTTokenMoE(in_dim=768, num_experts=4, hidden_dim=256)
         self.cross_fusion = CNNAttendedViT(dim=768)
@@ -464,13 +479,14 @@ class MedDINOGenerator(nn.Module):
         # skip1 = self.skip_proj1(z3) # 16 -> 128
 
         # --- Decoder ---
-        # bottleneck_fused = torch.cat([z12, c4], dim=1) # (B, 768+768, 16, 16)
         z_agg = self.vit_aggregator([z3, z6, z9, z12])  # (B, 768, 16, 16)
 
         # bottleneck = self.bottleneck_conv(z12) # -> (B, 512, 16, 16)
         # bottleneck = self.bottleneck_conv(c4) # -> (B, 512, 16, 16)
-        # bottleneck = self.bottleneck_conv(bottleneck_fused) # -> (B, 768, 16, 16)
-        bottleneck = self.cross_fusion(cnn_feat=c4, vit_feat=z_agg)  # (B, 768, 16, 16)
+        # bottleneck_fused = torch.cat([z12, c4], dim=1) # (B, 768+768, 16, 16)
+        bottleneck_fused = torch.cat([z_agg, c4], dim=1) # (B, 768+768, 16, 16)
+        bottleneck = self.bottleneck_conv(bottleneck_fused) # -> (B, 768, 16, 16)
+        # bottleneck = self.cross_fusion(cnn_feat=c4, vit_feat=z_agg)  # (B, 768, 16, 16)
         
         x = self.decoder4(bottleneck, skip=c3) # Upsample to 32
         # print(f"decoder4: {x.shape}")
