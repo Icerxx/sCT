@@ -34,6 +34,15 @@ def process_train_val(case_dir, output_root, case_name):
 
     if os.path.exists(mask_path):
         mask_vol = sitk.GetArrayFromImage(sitk.ReadImage(mask_path))
+
+        valid_slices = []
+        for i in range(mask_vol.shape[0]):
+            if not np.all(mask_vol[i] == 0):
+                valid_slices.append(i)
+
+        cbct_vol = cbct_vol[valid_slices]
+        ct_vol = ct_vol[valid_slices]
+        mask_vol = mask_vol[valid_slices]
         
         # Mask 外区域填充为 -1024
         cbct_vol = np.where(mask_vol == 1, cbct_vol, -1024)
@@ -76,8 +85,8 @@ if __name__ == "__main__":
         random.shuffle(cases)
         
         n_total = len(cases)
-        n_train = int(n_total * 0.9)
-        n_val = int(n_total * 0.05)
+        n_train = int(n_total * 0.8)
+        n_val = int(n_total * 0.1)
         
         splits = {
             'train': cases[:n_train],
