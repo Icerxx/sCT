@@ -13,8 +13,8 @@ class SynthRADDataset(Dataset):
         self.split = split
         self.img_size = img_size
         self.augment = augment
-        self.clip_min = -1024.
-        self.clip_max = 3000.
+        # self.clip_min = -1024.
+        # self.clip_max = 3000.
         self.norm_min_hu = -1024.
         self.norm_max_hu = 1500.
         
@@ -48,20 +48,14 @@ class SynthRADDataset(Dataset):
         return len(self.samples)
 
     def normalize(self, img):
-        """
-        Output: torch tensor float32
-        Range: Background (-1024) -> -1.0; Bone (1500) -> 1.0; Metal (3000) -> 2.18
-        """
-        # img = img.astype(np.float32)
-        
-        # Clip [-1024, 3000]
-        clipped_img = np.clip(img, a_min=self.clip_min, a_max=self.clip_max)
+        # Clip [-1024, 1500]
+        clipped_img = np.clip(img, a_min=self.norm_min_hu, a_max=self.norm_max_hu)
         
         # Normalize to [0, 1] relative to [-1024, 1500]
         norm_range_hu = self.norm_max_hu - self.norm_min_hu
         normalized_img = (clipped_img - self.norm_min_hu) / norm_range_hu
         
-        # Scale to [-1, 1] (allowing overshoot > 1 for high density)
+        # Scale to [-1, 1]
         scaled_img = (normalized_img - 0.5) * 2.0
         
         return torch.from_numpy(scaled_img)

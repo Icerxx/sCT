@@ -16,8 +16,8 @@ OUTPUT_DIR = os.path.join(ROOT, "res", "prediction")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # normalization constants
-CT_CLIP_MIN = -1024.0
-CT_CLIP_MAX = 3000.0
+# CT_CLIP_MIN = -1024.0
+# CT_CLIP_MAX = 3000.0
 NORM_MIN_HU = -1024.0
 NORM_MAX_HU = 1500.0
 
@@ -37,13 +37,12 @@ def preprocess_batch(vol_slice_np):
     # 1. 转 float32
     vol = vol_slice_np.astype(np.float32)
     
-    # 2. SynthRAD 归一化策略 (完全复现 dataset_v2.py)
-    # Clip [-1024, 3000]
-    clipped = np.clip(vol, CT_CLIP_MIN, CT_CLIP_MAX)
+    # 2. 归一化
+    # Clip [-1024, 1500]
+    clipped = np.clip(vol, NORM_MIN_HU, NORM_MAX_HU)
     # Normalize based on [-1024, 1500] -> [0, 1]
     norm_range = NORM_MAX_HU - NORM_MIN_HU
     normalized = (clipped - NORM_MIN_HU) / norm_range
-    # Scale -> [-1, 2.18...]
     scaled = (normalized - 0.5) * 2.0 
     
     # 3. 转 Tensor: (B, H, W) -> (B, 1, H, W)
@@ -100,9 +99,8 @@ def inference_case(model, case_name, save_root):
     if os.path.exists(mask_path):
         mask_vol = sitk.GetArrayFromImage(sitk.ReadImage(mask_path))
         
-        # 将 Mask 外的区域强制设为空气值 (CT_CLIP_MIN = -1024.0)
-        # 这与 prepare_data_v2.py 中的预处理逻辑保持一致
-        origin_vol = np.where(mask_vol == 1, origin_vol, CT_CLIP_MIN)
+        # 将 Mask 外的区域强制设为空气值 (NORM_MIN_HU = -1024.0)
+        origin_vol = np.where(mask_vol == 1, origin_vol, NORM_MIN_HU)
     else:
         print(f"Warning: Mask not found for {case_name}, inferring full image.")
 
