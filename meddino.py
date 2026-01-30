@@ -434,14 +434,14 @@ class MedDINOGenerator(nn.Module):
         self.input_skip = ConvStem(in_chans=3, out_chans=32)
         self.cnn_encoder = CNNEncoder(in_chans=32, base_dim=96, layers=[2, 2, 2, 2])
 
-        # self.bottleneck_conv = nn.Sequential(
-        #     nn.Conv2d(embed_dim + 768, 768, kernel_size=3, padding=1),
-        #     LayerNorm2d(768),
-        #     nn.GELU()
-        # )
+        self.bottleneck_conv = nn.Sequential(
+            nn.Conv2d(embed_dim + 768, 768, kernel_size=3, padding=1),
+            LayerNorm2d(768),
+            nn.GELU()
+        )
         # self.vit_aggregator = ViTFeatureAggregator(in_dims=[768]*4, out_dim=768)
         self.vit_aggregator = ViTTokenMoE(in_dim=768, num_experts=4, hidden_dim=256)
-        self.cross_fusion = CNNAttendedViT(dim=768)
+        # self.cross_fusion = CNNAttendedViT(dim=768)
 
         # Layer 4: 1/16 -> 1/8
         self.decoder4 = DecoderBlock(in_channels=768, skip_channels=384, out_channels=384, num_blocks=2)
@@ -453,7 +453,6 @@ class MedDINOGenerator(nn.Module):
         self.decoder1 = DecoderBlock(in_channels=96, skip_channels=32, out_channels=64, num_blocks=2)
         
         # 输出层
-        # self.out_conv = nn.Conv2d(32, out_chans, kernel_size=1)
         self.out_conv = nn.Sequential(
             nn.Conv2d(64, 32, kernel_size=3, padding=1),
             LayerNorm2d(32),
@@ -490,9 +489,9 @@ class MedDINOGenerator(nn.Module):
         # bottleneck = self.bottleneck_conv(z12) # -> (B, 512, 16, 16)
         # bottleneck = self.bottleneck_conv(c4) # -> (B, 512, 16, 16)
         # bottleneck_fused = torch.cat([z12, c4], dim=1) # (B, 768+768, 16, 16)
-        # bottleneck_fused = torch.cat([z_agg, c4], dim=1) # (B, 768+768, 16, 16)
-        # bottleneck = self.bottleneck_conv(bottleneck_fused) # -> (B, 768, 16, 16)
-        bottleneck = self.cross_fusion(cnn_feat=c4, vit_feat=z_agg)  # (B, 768, 16, 16)
+
+        bottleneck = self.bottleneck_conv(torch.cat([z_agg, c4], dim=1)) # -> (B, 768, 16, 16)
+        # bottleneck = self.cross_fusion(cnn_feat=c4, vit_feat=z_agg)  # (B, 768, 16, 16)
         
         x = self.decoder4(bottleneck, skip=c3) # Upsample to 32
         # print(f"decoder4: {x.shape}")
