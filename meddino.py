@@ -293,6 +293,7 @@ class ViTTokenMoE(nn.Module):
         self.project = nn.Sequential(
             nn.Conv2d(in_dim, in_dim, kernel_size=3, padding=1, groups=in_dim), # Depthwise
             LayerNorm2d(in_dim),
+            nn.GELU(),
             nn.Conv2d(in_dim, in_dim, kernel_size=1) # Pointwise
         )
 
@@ -335,13 +336,17 @@ class CNNAttendedViT(nn.Module):
         super().__init__()
         self.num_heads = num_heads
         self.scale = (dim // num_heads) ** -0.5
-        
+
+        self.norm_q = LayerNorm2d(dim)
+        self.norm_k = LayerNorm2d(dim)
+
         # Q, K, V Projections
-        self.to_q = nn.Conv2d(dim, dim, 1, bias=False) # CNN Input
-        self.to_k = nn.Conv2d(dim, dim, 1, bias=False) # ViT Input
-        self.to_v = nn.Conv2d(dim, dim, 1, bias=False) # ViT Input
+        self.to_q = nn.Conv2d(dim, dim, 1, bias=True) # CNN Input
+        self.to_k = nn.Conv2d(dim, dim, 1, bias=True) # ViT Input
+        self.to_v = nn.Conv2d(dim, dim, 1, bias=True) # ViT Input
 
         self.pos_embed = nn.Parameter(torch.randn(1, dim, feat_size, feat_size))
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
         
         # self.proj = nn.Conv2d(dim, dim, 1)
         # self.norm = LayerNorm2d(dim)
@@ -364,8 +369,8 @@ class CNNAttendedViT(nn.Module):
         else:
             pos_resized = self.pos_embed
 
-        q_in = cnn_feat + pos_resized
-        k_in = vit_feat + pos_resized
+        q_in = self.norm_q(cnn_feat) + pos_resized
+        k_in = self.norm_k(vit_feat) + pos_resized
         # 生成 Q, K, V
         # Reshape to (B, Heads, N, C_head)
         # N = H*W
@@ -387,9 +392,10 @@ class CNNAttendedViT(nn.Module):
         
         # out = self.proj(out)
         # out = self.norm(out)
-        
         # or residual + lamba * out
         # return residual + out
+
+        # return self.fusion_conv(torch.cat([cnn_feat, out], dim=1)) + residual
         return self.fusion_conv(torch.cat([cnn_feat, out], dim=1))
 
 # =================================================================
@@ -428,11 +434,11 @@ class MedDINOGenerator(nn.Module):
         self.input_skip = ConvStem(in_chans=3, out_chans=32)
         self.cnn_encoder = CNNEncoder(in_chans=32, base_dim=96, layers=[2, 2, 2, 2])
 
-        self.bottleneck_conv = nn.Sequential(
-            nn.Conv2d(embed_dim + 768, 768, kernel_size=3, padding=1),
-            LayerNorm2d(768),
-            nn.GELU()
-        )
+        # self.bottleneck_conv = nn.Sequential(
+        #     nn.Conv2d(embed_dim + 768, 768, kernel_size=3, padding=1),
+        #     LayerNorm2d(768),
+        #     nn.GELU()
+        # )
         # self.vit_aggregator = ViTFeatureAggregator(in_dims=[768]*4, out_dim=768)
         self.vit_aggregator = ViTTokenMoE(in_dim=768, num_experts=4, hidden_dim=256)
         self.cross_fusion = CNNAttendedViT(dim=768)
@@ -484,9 +490,9 @@ class MedDINOGenerator(nn.Module):
         # bottleneck = self.bottleneck_conv(z12) # -> (B, 512, 16, 16)
         # bottleneck = self.bottleneck_conv(c4) # -> (B, 512, 16, 16)
         # bottleneck_fused = torch.cat([z12, c4], dim=1) # (B, 768+768, 16, 16)
-        bottleneck_fused = torch.cat([z_agg, c4], dim=1) # (B, 768+768, 16, 16)
-        bottleneck = self.bottleneck_conv(bottleneck_fused) # -> (B, 768, 16, 16)
-        # bottleneck = self.cross_fusion(cnn_feat=c4, vit_feat=z_agg)  # (B, 768, 16, 16)
+        # bottleneck_fused = torch.cat([z_agg, c4], dim=1) # (B, 768+768, 16, 16)
+        # bottleneck = self.bottleneck_conv(bottleneck_fused) # -> (B, 768, 16, 16)
+        bottleneck = self.cross_fusion(cnn_feat=c4, vit_feat=z_agg)  # (B, 768, 16, 16)
         
         x = self.decoder4(bottleneck, skip=c3) # Upsample to 32
         # print(f"decoder4: {x.shape}")
