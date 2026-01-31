@@ -51,7 +51,7 @@ def train(log_dir, save_dir, args, device):
     # 3. Loss & Optimizer
     criterion = CompositeLoss(
         l1_weight=1.0, 
-        grad_weight=0,
+        grad_weight=0.1,
         perceptual_weight=0
         ).to(device)
     trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -100,7 +100,7 @@ def train(log_dir, save_dir, args, device):
             writer.add_scalar('Loss/Train_Step', loss.item(), global_step)
             writer.add_scalar('Loss/Step_L1', loss_dict['l1'], global_step)
             # writer.add_scalar('Loss/Step_Perceptual', loss_dict['perceptual'], global_step)
-            # writer.add_scalar('Loss/Step_Grad', loss_dict['grad'], global_step)
+            writer.add_scalar('Loss/Step_Grad', loss_dict['grad'], global_step)
             global_step += 1
             
         avg_train_loss = train_loss / len(train_loader)

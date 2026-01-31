@@ -32,24 +32,53 @@ class FFTLoss(nn.Module):
         
         return loss * self.loss_weight
     
-class GradientLoss(nn.Module):
-    def __init__(self):
-        super(GradientLoss, self).__init__()
-        self.l1 = CharbonnierLoss()
+# class GradientLoss(nn.Module):
+#     def __init__(self):
+#         super(GradientLoss, self).__init__()
+#         self.l1 = CharbonnierLoss()
+#
+#     def forward(self, pred, target):
+#         # 计算 X 方向梯度: I(x+1, y) - I(x, y)
+#         grad_pred_x = torch.abs(pred[:, :, :, :-1] - pred[:, :, :, 1:])
+#         grad_target_x = torch.abs(target[:, :, :, :-1] - target[:, :, :, 1:])
+#
+#         # 计算 Y 方向梯度: I(x, y+1) - I(x, y)
+#         grad_pred_y = torch.abs(pred[:, :, :-1, :] - pred[:, :, 1:, :])
+#         grad_target_y = torch.abs(target[:, :, :-1, :] - target[:, :, 1:, :])
+#
+#         loss_x = self.l1(grad_pred_x, grad_target_x)
+#         loss_y = self.l1(grad_pred_y, grad_target_y)
+#
+#         return loss_x + loss_y
 
-    def forward(self, pred, target):
+class GradientLoss(nn.Module):
+    def __init__(self, bone_weight=10.0):
+        super(GradientLoss, self).__init__()
+        self.bone_weight = bone_weight
+        # self.l1 = nn.L1Loss(reduction='none') # 不求平均，返回 map
+
+    def forward(self, pred, target, bone_mask):
         # 计算 X 方向梯度: I(x+1, y) - I(x, y)
         grad_pred_x = torch.abs(pred[:, :, :, :-1] - pred[:, :, :, 1:])
         grad_target_x = torch.abs(target[:, :, :, :-1] - target[:, :, :, 1:])
-        
+
         # 计算 Y 方向梯度: I(x, y+1) - I(x, y)
         grad_pred_y = torch.abs(pred[:, :, :-1, :] - pred[:, :, 1:, :])
         grad_target_y = torch.abs(target[:, :, :-1, :] - target[:, :, 1:, :])
-        
-        loss_x = self.l1(grad_pred_x, grad_target_x)
-        loss_y = self.l1(grad_pred_y, grad_target_y)
-        
-        return loss_x + loss_y
+
+        loss_x = torch.abs(grad_pred_x - grad_target_x)  # (B, C, H, W-1)
+        loss_y = torch.abs(grad_pred_y - grad_target_y)  # (B, C, H-1, W)
+
+        loss_x = F.pad(loss_x, (0, 1, 0, 0))
+        loss_y = F.pad(loss_y, (0, 0, 0, 1))
+        loss_map = loss_x + loss_y
+
+        # 骨头区域 x 10，其他区域 x 1
+        weights = 1.0 + (bone_mask * (self.bone_weight - 1.0))
+
+        # 加权平均
+        weighted_loss = (loss_map * weights).mean()
+        return weighted_loss
 
 class VGGPerceptualLoss(nn.Module):
     def __init__(self):
@@ -126,7 +155,17 @@ class CompositeLoss(nn.Module):
         # Perceptual Loss
         self.perceptual = VGGPerceptualLoss() if perceptual_weight > 0 else None
 
-    def forward(self, pred, target):
+        self.norm_min_hu = -1024.
+        self.norm_max_hu = 1500.
+        self.threshold = 300
+
+    def denorm(self, norm):
+        denorm = norm / 2.0 + 0.5
+        norm_range = self.norm_max_hu - self.norm_min_hu
+        denorm_hu = denorm * norm_range + self.norm_min_hu
+        return denorm_hu
+
+    def forward(self, pred, target, mask=None):
         """
         pred: (B, 1, H, W)
         target: (B, 1, H, W)
@@ -142,9 +181,15 @@ class CompositeLoss(nn.Module):
 
         # Gradient Loss
         if self.grad is not None:
-            loss_grad = self.grad(pred, target)
+            # loss_grad = self.grad(pred, target)
+            # total_loss += self.grad_weight * loss_grad
+            # loss_dict["grad"] = loss_grad.item()
+
+            mask = mask if mask is not None else (self.denorm(target) > self.threshold).float()
+            loss_grad = self.grad(pred, target, mask)
             total_loss += self.grad_weight * loss_grad
             loss_dict["grad"] = loss_grad.item()
+
 
         # Perceptual Loss
         if self.perceptual is not None:
@@ -153,4 +198,3 @@ class CompositeLoss(nn.Module):
             loss_dict["perceptual"] = loss_perceptual.item()
 
         return total_loss, loss_dict
-    
