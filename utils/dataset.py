@@ -19,7 +19,6 @@ class SynthRADDataset(Dataset):
         self.norm_max_hu = 1500.
         
         self.data_dir = os.path.join(root_dir, "data", split)
-        
         if not os.path.exists(self.data_dir):
             raise FileNotFoundError(f"Data directory not found: {self.data_dir}")
             
@@ -32,13 +31,16 @@ class SynthRADDataset(Dataset):
             case_path = os.path.join(self.data_dir, case_name)
             cbct_path = os.path.join(case_path, "cbct.npy")
             ct_path = os.path.join(case_path, "ct.npy")
+            seg_path = os.path.join(case_path, "segmentation.npy")
+
+            has_seg = os.path.exists(seg_path)
             
             if os.path.exists(cbct_path) and os.path.exists(ct_path):
                 try:
                     shape = np.load(cbct_path, mmap_mode='r').shape
                     num_slices = shape[0]
                     for z in range(num_slices):
-                        self.samples.append((cbct_path, ct_path, z))
+                        self.samples.append((cbct_path, ct_path, seg_path, has_seg, z))
                 except Exception as e:
                     print(f"Error reading {cbct_path}: {e}")
 
@@ -61,7 +63,7 @@ class SynthRADDataset(Dataset):
         return torch.from_numpy(scaled_img)
     
     def __getitem__(self, idx):
-        cbct_path, ct_path, slice_idx = self.samples[idx]
+        cbct_path, ct_path, seg_path, has_seg, slice_idx = self.samples[idx]
         
         # mmap 读取 (int16)
         cbct_vol = np.load(cbct_path, mmap_mode='r')
@@ -69,31 +71,43 @@ class SynthRADDataset(Dataset):
         
         img_cbct = cbct_vol[slice_idx].copy().astype(np.float32)
         img_ct = ct_vol[slice_idx].copy().astype(np.float32)
-        
+
+        if has_seg:
+            seg_vol = np.load(seg_path, mmap_mode='r')
+            img_seg = seg_vol[slice_idx].copy()
+        else:
+            img_seg = np.zeros_like(img_ct, dtype=np.uint8)
+
         # 归一化 (使用 SynthRAD 策略)
         tensor_cbct = self.normalize(img_cbct)
         tensor_ct = self.normalize(img_ct)
+        tensor_seg = torch.from_numpy(img_seg.astype(np.float32))
         
         # 增加维度 (1, 1, H, W)
         tensor_cbct = tensor_cbct.unsqueeze(0).unsqueeze(0)
         tensor_ct = tensor_ct.unsqueeze(0).unsqueeze(0)
+        tensor_seg = tensor_seg.unsqueeze(0).unsqueeze(0)
         
         # 3. Resize
         tensor_cbct = F.interpolate(tensor_cbct, size=(self.img_size, self.img_size), mode='bilinear', align_corners=False)
         tensor_ct = F.interpolate(tensor_ct, size=(self.img_size, self.img_size), mode='bilinear', align_corners=False)
+        tensor_seg = F.interpolate(tensor_seg, size=(self.img_size, self.img_size), mode='nearest')
         tensor_cbct = tensor_cbct.squeeze(0)
         tensor_ct = tensor_ct.squeeze(0)
+        tensor_seg = tensor_seg.squeeze(0)
 
         # 4. Augmentation
         if self.augment:
             if torch.rand(1) < 0.5:
                 tensor_cbct = T.functional.hflip(tensor_cbct)
                 tensor_ct = T.functional.hflip(tensor_ct)
+                tensor_seg = T.functional.hflip(tensor_seg)
 
         # 5. MedDINO 适配 (1 -> 3 channel)
         tensor_cbct = tensor_cbct.repeat(3, 1, 1)
         
         return {
             'cbct': tensor_cbct, 
-            'ct': tensor_ct
+            'ct': tensor_ct,
+            'seg': tensor_seg.long()
         }

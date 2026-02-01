@@ -20,6 +20,7 @@ def process_train_val(case_dir, output_root, case_name):
     cbct_path = os.path.join(case_dir, "cbct.mha")
     ct_path = os.path.join(case_dir, "ct.mha")
     mask_path = os.path.join(case_dir, "mask.mha")
+    seg_path = os.path.join(case_dir, "segmentation.nii.gz")
 
     if not (os.path.exists(cbct_path) and os.path.exists(ct_path)):
         return
@@ -32,6 +33,11 @@ def process_train_val(case_dir, output_root, case_name):
     cbct_vol = sitk.GetArrayFromImage(sitk.ReadImage(cbct_path))
     ct_vol = sitk.GetArrayFromImage(sitk.ReadImage(ct_path))
 
+    if os.path.exists(seg_path):
+        seg_vol = sitk.GetArrayFromImage(sitk.ReadImage(seg_path))
+    else:
+        seg_vol = np.zeros_like(ct_vol, dtype=np.uint8)
+
     if os.path.exists(mask_path):
         mask_vol = sitk.GetArrayFromImage(sitk.ReadImage(mask_path))
 
@@ -43,16 +49,19 @@ def process_train_val(case_dir, output_root, case_name):
         cbct_vol = cbct_vol[valid_slices]
         ct_vol = ct_vol[valid_slices]
         mask_vol = mask_vol[valid_slices]
+        seg_vol = seg_vol[valid_slices]
         
-        # Mask 外区域填充为 -1024
+        # Mask 外区域填充为 background
         cbct_vol = np.where(mask_vol == 1, cbct_vol, -1024)
         ct_vol = np.where(mask_vol == 1, ct_vol, -1024)
+        seg_vol = np.where(mask_vol == 1, seg_vol, 0)
     else:
         print(f"Warning: No mask found for {case_name}, using full image.")
 
     # 保存为 npy
     np.save(os.path.join(case_out_dir, "cbct.npy"), cbct_vol.astype(np.int16))
     np.save(os.path.join(case_out_dir, "ct.npy"), ct_vol.astype(np.int16))
+    np.save(os.path.join(case_out_dir, "segmentation.npy"), (seg_vol.astype(np.uint8)))
 
 def process_test(case_dir, output_root, case_name):
     """
