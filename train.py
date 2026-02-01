@@ -11,7 +11,7 @@ import argparse
 
 from meddino import MedDINOGenerator
 from utils.dataset import SynthRADDataset
-from utils.loss import CompositeLoss
+from utils.loss import AnatomyAwareLoss
 
 # global configs
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -49,10 +49,10 @@ def train(log_dir, save_dir, args, device):
             param.requires_grad = False
     
     # 3. Loss & Optimizer
-    criterion = CompositeLoss(
-        l1_weight=1.0, 
-        grad_weight=0.1,
-        perceptual_weight=0
+    criterion = AnatomyAwareLoss(
+        global_l1_weight=1.0,
+        masked_l1_weight=1.0,
+        masked_grad_weight=0.5
         ).to(device)
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     
@@ -60,8 +60,8 @@ def train(log_dir, save_dir, args, device):
     trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total Params: {total_params/1e6:.2f}M | Trainable: {trainable_count/1e6:.2f}M")
 
-    optimizer = AdamW(trainable_params, lr=1e-5, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch, eta_min=1e-7)
+    optimizer = AdamW(trainable_params, lr=2e-4, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch, eta_min=1e-6)
 
     scaler = GradScaler()
     
@@ -81,12 +81,13 @@ def train(log_dir, save_dir, args, device):
         for batch in loop:
             cbct = batch['cbct'].to(device)  # (B, 3, H, W)
             ct = batch['ct'].to(device)  # (B, 1, H, W)
+            seg = batch['seg'].to(device)  # (B, 1, H, W) Long Tensor
             
             optimizer.zero_grad()
             # Forward
             with autocast("cuda"):
                 pred_ct = model(cbct)
-                loss, loss_dict = criterion(pred_ct, ct)
+                loss, loss_dict = criterion(pred_ct, ct, seg_mask=seg)
             
             # Backward
             # loss.backward()
@@ -98,9 +99,10 @@ def train(log_dir, save_dir, args, device):
             train_loss += loss.item()
             loop.set_postfix(loss=loss.item())
             writer.add_scalar('Loss/Train_Step', loss.item(), global_step)
-            writer.add_scalar('Loss/Step_L1', loss_dict['l1'], global_step)
+            writer.add_scalar('Loss/Step_L1', loss_dict['global_l1'], global_step)
+            writer.add_scalar('Loss/Step_masked_L1', loss_dict['soft_l1'], global_step)
+            writer.add_scalar('Loss/Step_masked_Grad', loss_dict['bone_grad'], global_step)
             # writer.add_scalar('Loss/Step_Perceptual', loss_dict['perceptual'], global_step)
-            writer.add_scalar('Loss/Step_Grad', loss_dict['grad'], global_step)
             global_step += 1
             
         avg_train_loss = train_loss / len(train_loader)
@@ -117,10 +119,11 @@ def train(log_dir, save_dir, args, device):
             for batch in val_loader:
                 cbct = batch['cbct'].to(device)
                 ct = batch['ct'].to(device)
+                seg = batch['seg'].to(device)
 
                 with autocast("cuda"):
                     pred = model(cbct)
-                    v_loss, _ = criterion(pred, ct)
+                    v_loss, _ = criterion(pred, ct, seg_mask=seg)
                     val_loss += v_loss.item()
         
         avg_val_loss = val_loss / len(val_loader)
