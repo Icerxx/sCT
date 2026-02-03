@@ -13,7 +13,7 @@ from meddino import MedDINOGenerator
 ROOT = os.path.dirname(os.path.abspath(__file__))
 TEST_DATA_DIR = os.path.join(ROOT, "data", "test")
 OUTPUT_DIR = os.path.join(ROOT, "res", "prediction")
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # normalization constants
 # CT_CLIP_MIN = -1024.0
@@ -26,6 +26,7 @@ def parse_args():
     parser.add_argument("--img_size", type=int, default=256, help="Input image size (must match training)")
     parser.add_argument("--batch", type=int, default=32, help="Batch size for inference")
     parser.add_argument("--model", type=str, default="best_model.pth", help="ROOT/checkpoints/meddino_sct")
+    parser.add_argument("--gpu", type=int, default=0, help="Specify GPU ID to use (default: 0)")
     return parser.parse_args()
 
 def preprocess_batch(vol_slice_np):
@@ -84,7 +85,7 @@ def postprocess_batch(pred_tensor, original_hw):
     # 4. 转 Numpy
     return pred_hu.squeeze(1).cpu().numpy()
 
-def inference_case(model, case_name, save_root):
+def inference_case(model, case_name, save_root, device):
     cbct_path = os.path.join(TEST_DATA_DIR, case_name, "cbct.mha")
 
     if not os.path.exists(cbct_path):
@@ -121,7 +122,7 @@ def inference_case(model, case_name, save_root):
             
             # 预处理 (含归一化 + Resize 256 + 转3通道)
             batch_tensor = preprocess_batch(batch_slice_np)
-            batch_tensor = batch_tensor.to(DEVICE)
+            batch_tensor = batch_tensor.to(device)
             
             # Forward
             pred = model(batch_tensor) # (B, 1, 256, 256)
@@ -149,13 +150,16 @@ def inference_case(model, case_name, save_root):
 
 
 def main(args):
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
     MODEL_PATH = os.path.join(ROOT, "checkpoints", "meddino_sct", args.model)
 
     print(f"Loading model from {MODEL_PATH}...")
-    model = MedDINOGenerator(img_size=args.img_size).to(DEVICE)
+    model = MedDINOGenerator(img_size=args.img_size).to(device)
     
     if os.path.exists(MODEL_PATH):
-        checkpoint = torch.load(MODEL_PATH, map_location=DEVICE, weights_only=True)
+        checkpoint = torch.load(MODEL_PATH, map_location=device, weights_only=True)
         model.load_state_dict(checkpoint)
         print("Model loaded successfully.")
     else:
@@ -172,7 +176,7 @@ def main(args):
     print(f"Found {len(test_cases)} test cases in {TEST_DATA_DIR}")
 
     for case_name in tqdm(test_cases, desc="Inference"):
-        inference_case(model, case_name, OUTPUT_DIR)
+        inference_case(model, case_name, OUTPUT_DIR, device)
 
     print(f"\nInference Done! Results saved to {OUTPUT_DIR}")
 
