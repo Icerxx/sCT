@@ -1,4 +1,6 @@
 import torch
+import random
+import numpy as np
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid
@@ -11,11 +13,26 @@ import argparse
 
 from meddino import MedDINOGenerator
 from utils.dataset import SynthRADDataset
-from utils.loss import AnatomyAwareLoss
+from utils.loss import AnatomyAwareLoss, CharbonnierLoss
 
 # global configs
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PRETRAINED_PATH = os.path.join(ROOT, "model.pth")
+
+def seed_everything(seed=42):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+def worker_init_fn(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 # hyperparameters
 def parse_args():
@@ -25,6 +42,7 @@ def parse_args():
     parser.add_argument("--img_size", type=int, default=256, help="Input image size")
     parser.add_argument("--unfreeze", action="store_true", help="Freeze encoder (ViT backbone) during training")
     parser.add_argument("--gpu", type=int, default=0, help="Specify GPU ID to use (default: 0)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     return parser.parse_args()
 
 def train(log_dir, save_dir, args, device):
@@ -34,8 +52,8 @@ def train(log_dir, save_dir, args, device):
     train_ds = SynthRADDataset(ROOT, split='train', img_size=args.img_size, augment=False)
     val_ds = SynthRADDataset(ROOT, split='val', img_size=args.img_size, augment=False)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=8, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=8, pin_memory=True, worker_init_fn=worker_init_fn)
+    val_loader = DataLoader(val_ds, batch_size=args.batch, shuffle=False, num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn)
 
     # 2. Model
     model = MedDINOGenerator(img_size=args.img_size, pretrained_path=PRETRAINED_PATH).to(device)
@@ -51,16 +69,17 @@ def train(log_dir, save_dir, args, device):
     # 3. Loss & Optimizer
     criterion = AnatomyAwareLoss(
         global_l1_weight=1.0,
-        masked_l1_weight=1.0,
-        masked_grad_weight=0.5
+        masked_l1_weight=0,
+        masked_grad_weight=0
         ).to(device)
+    val_criterion = CharbonnierLoss().to(device)
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     
     total_params = sum(p.numel() for p in model.parameters())
     trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total Params: {total_params/1e6:.2f}M | Trainable: {trainable_count/1e6:.2f}M")
 
-    optimizer = AdamW(trainable_params, lr=2e-4, weight_decay=1e-4)
+    optimizer = AdamW(trainable_params, lr=1e-4, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch, eta_min=1e-6)
 
     scaler = GradScaler()
@@ -119,11 +138,11 @@ def train(log_dir, save_dir, args, device):
             for batch in val_loader:
                 cbct = batch['cbct'].to(device)
                 ct = batch['ct'].to(device)
-                seg = batch['seg'].to(device)
+                # seg = batch['seg'].to(device)
 
                 with autocast("cuda"):
                     pred = model(cbct)
-                    v_loss, _ = criterion(pred, ct, seg_mask=seg)
+                    v_loss = val_criterion(pred, ct)
                     val_loss += v_loss.item()
         
         avg_val_loss = val_loss / len(val_loader)
@@ -162,12 +181,14 @@ def train(log_dir, save_dir, args, device):
 
 if __name__ == "__main__":
     args = parse_args()
+    seed_everything(args.seed)
+
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    LOG_DIR = os.path.join(ROOT, "log", timestamp)
-    SAVE_DIR = os.path.join(ROOT, "checkpoints", timestamp)
+    LOG_DIR = os.path.join(ROOT, "log", f"{timestamp}_seed{args.seed}")
+    SAVE_DIR = os.path.join(ROOT, "checkpoints", f"{timestamp}_seed{args.seed}")
     
     os.makedirs(SAVE_DIR, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)

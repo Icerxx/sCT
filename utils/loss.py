@@ -19,7 +19,7 @@ class CharbonnierLoss(nn.Module):
     Robust L1 Loss: sqrt(x^2 + eps^2)
     """
 
-    def __init__(self, eps=1e-3, reduction='mean'):
+    def __init__(self, eps=1e-6, reduction='mean'):
         super(CharbonnierLoss, self).__init__()
         self.eps = eps
         self.reduction = reduction
