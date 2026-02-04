@@ -49,7 +49,7 @@ def train(log_dir, save_dir, args, device):
     writer = SummaryWriter(log_dir=log_dir)
 
     # 1. Dataset & Loader
-    train_ds = SynthRADDataset(ROOT, split='train', img_size=args.img_size, augment=False)
+    train_ds = SynthRADDataset(ROOT, split='train', img_size=args.img_size, augment=True)
     val_ds = SynthRADDataset(ROOT, split='val', img_size=args.img_size, augment=False)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=8, pin_memory=True, worker_init_fn=worker_init_fn)
@@ -122,6 +122,18 @@ def train(log_dir, save_dir, args, device):
             writer.add_scalar('Loss/Step_masked_L1', loss_dict['soft_l1'], global_step)
             writer.add_scalar('Loss/Step_masked_Grad', loss_dict['bone_grad'], global_step)
             # writer.add_scalar('Loss/Step_Perceptual', loss_dict['perceptual'], global_step)
+
+            if global_step % 1000 == 0:
+                with torch.no_grad():
+                    vis_input = cbct[:, 0:1, :, :] * 0.5 + 0.5
+                    vis_pred = pred_ct * 0.5 + 0.5
+                    vis_label = ct * 0.5 + 0.5
+                    vis_seg = seg
+
+                    img_grid = torch.cat([vis_input, vis_pred, vis_label, vis_seg], dim=0)
+                    gird = make_grid(img_grid, nrow=cbct.shape[0], padding=2, normalize=False)
+                    writer.add_image('Train/Input_Pred_GT_Seg', gird, global_step)
+
             global_step += 1
             
         avg_train_loss = train_loss / len(train_loader)

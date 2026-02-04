@@ -3,7 +3,8 @@ import torch
 import numpy as np
 import torch.nn.functional as F
 from torch.utils.data import Dataset
-import torchvision.transforms as T
+# import torchvision.transforms as T
+import torchvision.transforms.functional as TF
 import random
 from tqdm import tqdm
 
@@ -99,9 +100,50 @@ class SynthRADDataset(Dataset):
         # 4. Augmentation
         if self.augment:
             if torch.rand(1) < 0.5:
-                tensor_cbct = T.functional.hflip(tensor_cbct)
-                tensor_ct = T.functional.hflip(tensor_ct)
-                tensor_seg = T.functional.hflip(tensor_seg)
+                tensor_cbct = TF.hflip(tensor_cbct)
+                tensor_ct = TF.hflip(tensor_ct)
+                tensor_seg = TF.hflip(tensor_seg)
+
+            if torch.rand(1) < 0.5:
+                angle = random.uniform(-10, 10)
+                tensor_cbct = TF.rotate(tensor_cbct, angle, interpolation=TF.InterpolationMode.BILINEAR, fill=-1.0)
+                tensor_ct = TF.rotate(tensor_ct, angle, interpolation=TF.InterpolationMode.BILINEAR, fill=-1.0)
+                tensor_seg = TF.rotate(tensor_seg, angle, interpolation=TF.InterpolationMode.NEAREST, fill=0)
+
+            if torch.rand(1) < 0.5:
+                max_trans = 30  # 移动 +/- 30 像素
+                dx = random.randint(-max_trans, max_trans)
+                dy = random.randint(-max_trans, max_trans)
+
+                tensor_cbct = TF.affine(tensor_cbct, angle=0, translate=(dx, dy), scale=1.0, shear=0,
+                                                  interpolation=TF.InterpolationMode.BILINEAR, fill=-1.0)
+                tensor_ct = TF.affine(tensor_ct, angle=0, translate=(dx, dy), scale=1.0, shear=0,
+                                                interpolation=TF.InterpolationMode.BILINEAR, fill=-1.0)
+                tensor_seg = TF.affine(tensor_seg, angle=0, translate=(dx, dy), scale=1.0, shear=0,
+                                                 interpolation=TF.InterpolationMode.NEAREST, fill=0)
+
+            if torch.rand(1) < 0.5:
+                scale = random.uniform(0.9, 1.1)  # 缩放 0.9~1.1 倍
+                tensor_cbct = TF.affine(tensor_cbct, angle=0, translate=(0, 0), scale=scale, shear=0,
+                                                  interpolation=TF.InterpolationMode.BILINEAR, fill=-1.0)
+                tensor_ct = TF.affine(tensor_ct, angle=0, translate=(0, 0), scale=scale, shear=0,
+                                                interpolation=TF.InterpolationMode.BILINEAR, fill=-1.0)
+                tensor_seg = TF.affine(tensor_seg, angle=0, translate=(0, 0), scale=scale, shear=0,
+                                                 interpolation=TF.InterpolationMode.NEAREST, fill=0)
+
+            # # 随机高斯噪声 (Noise)
+            # if torch.rand(1) < 0.5:
+            #     noise = torch.randn_like(tensor_cbct) * 0.05
+            #     tensor_cbct = tensor_cbct + noise
+            #     tensor_cbct = torch.clamp(tensor_cbct, -1.0, 1.0)
+            #
+            # # 随机 Gamma 变换 (Contrast)
+            # if torch.rand(1) < 0.5:
+            #     gamma = random.uniform(0.8, 1.2)
+            #     img_01 = tensor_cbct * 0.5 + 0.5 # [-1,1] -> [0,1]
+            #     img_01 = torch.clamp(img_01, 1e-6, 1.0)
+            #     img_aug = torch.pow(img_01, gamma)
+            #     tensor_cbct = img_aug * 2.0 - 1.0
 
         # 5. MedDINO 适配 (1 -> 3 channel)
         tensor_cbct = tensor_cbct.repeat(3, 1, 1)
