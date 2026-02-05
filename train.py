@@ -49,11 +49,16 @@ def train(log_dir, save_dir, args, device):
     writer = SummaryWriter(log_dir=log_dir)
 
     # 1. Dataset & Loader
+    g = torch.Generator()
+    g.manual_seed(args.seed)
+
     train_ds = SynthRADDataset(ROOT, split='train', img_size=args.img_size, augment=True)
     val_ds = SynthRADDataset(ROOT, split='val', img_size=args.img_size, augment=False)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=8, pin_memory=True, worker_init_fn=worker_init_fn)
-    val_loader = DataLoader(val_ds, batch_size=args.batch, shuffle=False, num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn)
+    train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=8, 
+                              pin_memory=True, worker_init_fn=worker_init_fn, generator=g)
+    val_loader = DataLoader(val_ds, batch_size=args.batch, shuffle=False, num_workers=4, 
+                            pin_memory=True, worker_init_fn=worker_init_fn)
 
     # 2. Model
     model = MedDINOGenerator(img_size=args.img_size, pretrained_path=PRETRAINED_PATH).to(device)
