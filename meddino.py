@@ -2,6 +2,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from timm.layers import DropPath
 from dinov3.models.vision_transformer import vit_base
 
 
@@ -143,7 +144,7 @@ class Block(nn.Module):
         self.pwconv2 = nn.Linear(4 * dim, dim)
         self.gamma = nn.Parameter(layer_scale_init_value * torch.ones((dim)),
                                   requires_grad=True) if layer_scale_init_value > 0 else None
-        # self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
     def forward(self, x):
         input = x
@@ -157,33 +158,36 @@ class Block(nn.Module):
             x = self.gamma * x
         x = x.permute(0, 3, 1, 2)  # (N, H, W, C) -> (N, C, H, W)
 
-        # x = input + self.drop_path(x)
-        x = input + x
+        x = input + self.drop_path(x)
+        # x = input + x
         return x
 
 class CNNEncoder(nn.Module):
-    def __init__(self, in_chans=32, base_dim=64, layers=[2, 2, 2, 2]):
+    def __init__(self, in_chans=32, base_dim=64, layers=[2, 2, 2, 2], drop_path_rate=0.):
         super().__init__()
         # # Input: 32 (来自 InputEncoder)
+        self.layers = layers
+        self.drop_path_rate = drop_path_rate
+        self.dp_rates = [x.item() for x in torch.linspace(0, drop_path_rate, sum(layers))]
 
         # Stage 1: 32 -> 96, 1/2 Res
         self.down1 = Downsample(in_chans, base_dim)
-        self.stage1 = self._make_stage(base_dim, layers[0])
+        self.stage1 = self._make_stage(base_dim, layers[0], self.dp_rates[:layers[0]])
 
         # Stage 2: 96 -> 192, 1/4 Res
         self.down2 = Downsample(base_dim, base_dim * 2)
-        self.stage2 = self._make_stage(base_dim * 2, layers[1])
+        self.stage2 = self._make_stage(base_dim * 2, layers[1], self.dp_rates[layers[0]:layers[0] + layers[1]])
 
         # Stage 3: 192 -> 384, 1/8 Res
         self.down3 = Downsample(base_dim * 2, base_dim * 4)
-        self.stage3 = self._make_stage(base_dim * 4, layers[2])
+        self.stage3 = self._make_stage(base_dim * 4, layers[2], self.dp_rates[layers[0] + layers[1]:sum(layers[:3])])
 
         # Stage 4: 384 -> 768, 1/16 Res
         self.down4 = Downsample(base_dim * 4, base_dim * 8)
-        self.stage4 = self._make_stage(base_dim * 8, layers[3])
+        self.stage4 = self._make_stage(base_dim * 8, layers[3], self.dp_rates[sum(layers[:3]):])
 
-    def _make_stage(self, dim, num_blocks):
-        return nn.Sequential(*[Block(dim) for _ in range(num_blocks)])
+    def _make_stage(self, dim, num_blocks, dp_rates):
+        return nn.Sequential(*[Block(dim, drop_path=dp_rates[i]) for i in range(num_blocks)])
 
     def forward(self, x):
         # 逐层下采样和特征提取
@@ -200,7 +204,6 @@ class CNNEncoder(nn.Module):
         c4 = self.stage4(x)  # 1/16
 
         return c1, c2, c3, c4
-
 
 class DecoderBlock(nn.Module):
     def __init__(self, in_channels, skip_channels, out_channels, num_blocks=1):
