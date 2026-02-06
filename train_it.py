@@ -90,11 +90,11 @@ def train(log_dir, save_dir, args, device):
     trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total Params: {total_params/1e6:.2f}M | Trainable: {trainable_count/1e6:.2f}M")
 
-    optimizer = AdamW(trainable_params, lr=1e-4, weight_decay=1e-5)
+    optimizer = AdamW(trainable_params, lr=2e-4, weight_decay=1e-5)
     
     # [修改] T_max 设为总步数，实现更平滑的 Per-Step Decay
     # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.max_steps, eta_min=1e-6)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=2e-4, total_steps=args.max_steps, pct_start=0.1, 
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=5e-4, total_steps=args.max_steps, pct_start=0.05, 
                                                     anneal_strategy='cos', final_div_factor=1000)
     scaler = GradScaler()
     
