@@ -434,12 +434,12 @@ class MedDINOGenerator(nn.Module):
         # Skip 1 (Layer 3): 16 -> 128 (8x)
         # self.skip_proj1 = AdaptiveSkipProjector(embed_dim, 64, scale_factor=8)
 
-        self.input_skip = ConvStem(in_chans=3, out_chans=32)
+        self.input_skip = ConvStem(in_chans=1, out_chans=32)
         self.cnn_encoder = CNNEncoder(in_chans=32, base_dim=96, layers=[2, 2, 2, 2])
 
         self.bottleneck_conv = nn.Sequential(
-            nn.Conv2d(embed_dim + 768, 768, kernel_size=3, padding=1),
-            LayerNorm2d(768),
+            nn.Conv2d(embed_dim + 768, 512, kernel_size=3, padding=1),
+            LayerNorm2d(512),
             nn.GELU()
         )
         # self.vit_aggregator = ViTFeatureAggregator(in_dims=[768]*4, out_dim=768)
@@ -447,29 +447,28 @@ class MedDINOGenerator(nn.Module):
         # self.cross_fusion = CNNAttendedViT(dim=768)
 
         # Layer 4: 1/16 -> 1/8
-        self.decoder4 = DecoderBlock(in_channels=768, skip_channels=384, out_channels=384, num_blocks=2)
+        self.decoder4 = DecoderBlock(in_channels=512, skip_channels=384, out_channels=256, num_blocks=2)
         # Layer 3: 1/8 -> 1/4
-        self.decoder3 = DecoderBlock(in_channels=384, skip_channels=192, out_channels=192, num_blocks=2)
+        self.decoder3 = DecoderBlock(in_channels=256, skip_channels=192, out_channels=128, num_blocks=2)
         # Layer 2: 1/4 -> 1/2
-        self.decoder2 = DecoderBlock(in_channels=192, skip_channels=96, out_channels=96, num_blocks=2)
+        self.decoder2 = DecoderBlock(in_channels=128, skip_channels=96, out_channels=64, num_blocks=2)
         # Layer 1: 1/2 -> 1/1
-        self.decoder1 = DecoderBlock(in_channels=96, skip_channels=32, out_channels=64, num_blocks=2)
+        self.decoder1 = DecoderBlock(in_channels=64, skip_channels=32, out_channels=32, num_blocks=2)
         
         # 输出层
         self.out_conv = nn.Sequential(
-            nn.Conv2d(64, 32, kernel_size=3, padding=1),
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),
             LayerNorm2d(32),
             nn.GELU(),
             nn.Conv2d(32, out_chans, kernel_size=1)
         )
 
     def forward(self, x):
-        # x: (B, 1, H, W)
-        # 如果输入是单通道 (医学图像)，但模型期望 3 通道 (DINO Pretrained)，则复制通道
+        # x: (B, 3, H, W)
         if x.shape[1] == 1:
             x = x.repeat(1, 3, 1, 1)
         x_in = x
-        x_feat = self.input_skip(x_in)
+        x_feat = self.input_skip(x_in[:, 0:1, :, :])
 
         # --- Encoder ---
         # 提取 ViT 中间层的索引 (用于 Skip Connection)
@@ -518,7 +517,7 @@ if __name__ == '__main__':
     print(f"Total Params: {total_params/1e6:.2f}M | Trainable: \
           {(total_params-sum(p.numel() for p in model.vit_encoder.parameters()))/1e6:.2f}M")
 
-    dummy_input = torch.randn(1, 1, 256, 256).to(device)
+    dummy_input = torch.randn(1, 3, 256, 256).to(device)
     output = model(dummy_input)
     print(f"Input: {dummy_input.shape}")
     print(f"Output: {output.shape}")
