@@ -16,6 +16,7 @@ from utils.dataset import SynthRADDataset
 from utils.loss import AnatomyAwareLoss, CharbonnierLoss
 from unet import get_unet, get_unetpp
 from swinunet import SwinTransformerSys
+from transunet import VisionTransformer, CONFIG
 
 # global configs
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -77,7 +78,8 @@ def train(log_dir, save_dir, args, device):
     # model = MedDINOGenerator(img_size=args.img_size, pretrained_path=PRETRAINED_PATH).to(device)
     # model = get_unet(device)
     # model = get_unetpp(device)
-    model = SwinTransformerSys(img_size=args.img_size, window_size=8, num_classes=1).to(device)
+    # model = SwinTransformerSys(img_size=args.img_size, window_size=8, num_classes=1).to(device)
+    model = VisionTransformer(CONFIG, img_size=256, num_classes=CONFIG.n_classes).to(device)
 
     # if args.unfreeze:
     #     print(">>> Mode: Full Fine-tuning (Encoder + Decoder).")
@@ -106,7 +108,7 @@ def train(log_dir, save_dir, args, device):
     # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.max_steps, eta_min=1e-6)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=5e-4, total_steps=args.max_steps, pct_start=0.05,
                                                     anneal_strategy='cos', final_div_factor=1000)
-    scaler = GradScaler()
+    # scaler = GradScaler()
 
     # 4. Loop
     best_val_loss = float('inf')
@@ -143,20 +145,23 @@ def train(log_dir, save_dir, args, device):
         optimizer.zero_grad()
 
         # Forward
-        with autocast("cuda"):
-            pred_ct = model(cbct)
-            loss, loss_dict = criterion(pred_ct, ct, seg_mask=seg)
+        # with autocast("cuda"):
+        pred_ct = model(cbct)
+        loss, loss_dict = criterion(pred_ct, ct, seg_mask=seg)
 
         # Backward
-        scaler.scale(loss).backward()
-        prev_scale = scaler.get_scale()
-        scaler.step(optimizer)
-        scaler.update()
-        new_scale = scaler.get_scale()
+        # scaler.scale(loss).backward()
+        # prev_scale = scaler.get_scale()
+        # scaler.step(optimizer)
+        # scaler.update()
+        # new_scale = scaler.get_scale()
+        loss.backward()
+        optimizer.step()
 
-        # [修改] Step-wise Scheduler Update
-        if new_scale >= prev_scale:
-            scheduler.step()
+        # # [修改] Step-wise Scheduler Update
+        # if new_scale >= prev_scale:
+        #     scheduler.step()
+        scheduler.step()
 
         # Logging
         current_loss = loss.item()
@@ -200,10 +205,10 @@ def train(log_dir, save_dir, args, device):
                     v_cbct = val_batch['cbct'].to(device)
                     v_ct = val_batch['ct'].to(device)
 
-                    with autocast("cuda"):
-                        v_pred = model(v_cbct)
-                        v_l = val_criterion(v_pred, v_ct)
-                        val_loss += v_l.item()
+                    # with autocast("cuda"):
+                    v_pred = model(v_cbct)
+                    v_l = val_criterion(v_pred, v_ct)
+                    val_loss += v_l.item()
 
             avg_val_loss = val_loss / len(val_loader)
             writer.add_scalar('Loss/Val_Step', avg_val_loss, step)
