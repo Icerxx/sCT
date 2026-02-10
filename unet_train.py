@@ -15,6 +15,7 @@ from meddino import MedDINOGenerator
 from utils.dataset import SynthRADDataset
 from utils.loss import AnatomyAwareLoss, CharbonnierLoss
 from unet import get_unet, get_unetpp
+from swinunet import SwinTransformerSys
 
 # global configs
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -74,8 +75,9 @@ def train(log_dir, save_dir, args, device):
 
     # 2. Model
     # model = MedDINOGenerator(img_size=args.img_size, pretrained_path=PRETRAINED_PATH).to(device)
-    model = get_unet(device)
+    # model = get_unet(device)
     # model = get_unetpp(device)
+    model = SwinTransformerSys(img_size=args.img_size, window_size=8, num_classes=1).to(device)
 
     # if args.unfreeze:
     #     print(">>> Mode: Full Fine-tuning (Encoder + Decoder).")
