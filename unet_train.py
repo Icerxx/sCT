@@ -17,6 +17,7 @@ from utils.loss import AnatomyAwareLoss, CharbonnierLoss
 from unet import get_unet, get_unetpp
 from swinunet import SwinTransformerSys
 from transunet import VisionTransformer, CONFIG
+from mednext import MedNeXt
 
 # global configs
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -79,7 +80,21 @@ def train(log_dir, save_dir, args, device):
     # model = get_unet(device)
     # model = get_unetpp(device)
     # model = SwinTransformerSys(img_size=args.img_size, window_size=8, num_classes=1).to(device)
-    model = VisionTransformer(CONFIG, img_size=256, num_classes=CONFIG.n_classes).to(device)
+    # model = VisionTransformer(CONFIG, img_size=256, num_classes=CONFIG.n_classes).to(device)
+    model = MedNeXt(
+        in_channels=3,
+        n_channels=32,
+        n_classes=1,
+        exp_r=[2,3,4,4,4,4,4,3,2], # base config [2,3,4,4,4,4,4,3,2]
+        kernel_size=3,
+        deep_supervision=False,
+        do_res=True,
+        do_res_up_down=True,
+        # block_counts=[2,2,2,2,2,2,2,2,2],
+        block_counts=[3,4,8,8,8,8,8,4,3],
+        norm_type='group', # Type of Norm: 'group' or 'layer'
+        dim='2d'
+    ).to(device)
 
     # if args.unfreeze:
     #     print(">>> Mode: Full Fine-tuning (Encoder + Decoder).")
