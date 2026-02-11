@@ -1,5 +1,7 @@
 import segmentation_models_pytorch as smp
 import torch
+from monai.networks.nets import UNETR
+
 
 def get_unet(device):
     # 使用 ResNet34 作为 Encoder，加载 ImageNet 权重
@@ -28,7 +30,19 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # model = get_unet(device)
-    model = get_unetpp(device)
+    # model = get_unetpp(device)
+    model = UNETR(
+        in_channels=3,
+        out_channels=1,
+        img_size=(256, 256), # 2D模式下
+        feature_size=16,     # 控制网络宽度
+        hidden_size=768,     # ViT hidden dim
+        mlp_dim=3072,
+        num_heads=12,
+        norm_name="instance",
+        res_block=True,
+        spatial_dims=2       # 【关键】设为 2 表示 2D 网络
+    ).to(device)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total Params: {total_params/1e6:.2f}M")
 
