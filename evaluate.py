@@ -8,7 +8,6 @@ sys.path.append(ROOT)
 import numpy as np
 from utils.image_metrics import ImageMetrics
 import SimpleITK as sitk
-import nibabel as nib
 import csv
 
 DATA_ROOT_DIR = os.path.join(ROOT, "data", "test")
@@ -80,68 +79,12 @@ def write_results_to_csv(results, csv_path):
         # Write the results
         writer.writerow(results)
         
-def evaluate_case_per_slice(case_name):
-    metrics_hu = ImageMetrics(hu=True, visualize=False)
-
-    label_dir = os.path.join(DATA_ROOT_DIR, case_name)
-    test_dir = os.path.join(PREDICTION_DIR, case_name)
-
-    cbct_path = os.path.join(label_dir, "cbct.mha")
-    ct_path = os.path.join(label_dir, "ct.mha")
-    mask_path = os.path.join(label_dir, "mask.mha")
-    cleaned_cbct_path = os.path.join(test_dir, "cleaned_cbct.nii.gz")
-
-    print(f"\nEvaluating case: {case_name}")
-    cbct_hu = sitk.GetArrayFromImage(sitk.ReadImage(cbct_path))
-    ct_hu = sitk.GetArrayFromImage(sitk.ReadImage(ct_path))
-    mask = sitk.GetArrayFromImage(sitk.ReadImage(mask_path))
-    # cleaned_cbct_mu = nib.load(cleaned_cbct_path).get_fdata(dtype=np.float32).transpose(2, 1, 0)
-    # cleaned_cbct_mu[cleaned_cbct_mu < 0] = 0
-    cleaned_cbct_hu = nib.load(cleaned_cbct_path).get_fdata(dtype=np.float32).transpose(2, 1, 0)
-
-    slice_metrics = []
-
-    for i in range(ct_hu.shape[0]):
-        slice_mask = mask[i]
-        if np.sum(slice_mask) == 0:
-            continue  # Skip slices without any mask
-
-        slice_cbct_hu = cbct_hu[i]
-        slice_ct_hu = ct_hu[i]
-        slice_cleaned_cbct_hu = cleaned_cbct_hu[i]
-
-        slice_cleaned_cbct_hu = np.round(slice_cleaned_cbct_hu).astype(ct_hu.dtype)
-
-        # 添加一个伪维度，将 2D 数据变为 3D
-        slice_ct_hu = slice_ct_hu[np.newaxis, ...]
-        slice_cbct_hu = slice_cbct_hu[np.newaxis, ...]
-        slice_cleaned_cbct_hu = slice_cleaned_cbct_hu[np.newaxis, ...]
-        slice_mask = slice_mask[np.newaxis, ...]
-
-        raw_metrics = metrics_hu.score_patient(slice_ct_hu, slice_cbct_hu, slice_mask)
-        cleaned_metrics = metrics_hu.score_patient(slice_ct_hu, slice_cleaned_cbct_hu, slice_mask)
-
-        slice_metrics.append({
-            "slice_index": i,
-            "raw_metric": raw_metrics,
-            "cleaned_metric": cleaned_metrics,
-            "diff_metric": {
-                key: cleaned_metrics[key] - raw_metrics[key]
-                for key in raw_metrics
-            }
-        })
-        print("slice_index", slice_metrics[-1]["slice_index"])
-        print("raw_metric", slice_metrics[-1]["raw_metric"])
-        print("cleaned_metric", slice_metrics[-1]["cleaned_metric"])
-        print("diff", slice_metrics[-1]["diff_metric"])
-        print("-" * 50)
-    return slice_metrics
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate synthetic CT results.")
     parser.add_argument("--dir", type=str, default="prediction", help="Specify PREDICTION_DIR. Default is 'prediction'.")
     parser.add_argument("--case", type=str, help="Specify a case name to evaluate. If not provided, all cases in prediction will be evaluated.")
+    parser.add_argument("--csv", type=str, default="evaluation_results", help="Specify the name of the CSV file (default: 'evaluation_results').")
     args = parser.parse_args()
 
     PREDICTION_DIR = os.path.join(ROOT, "res", args.dir)
@@ -159,4 +102,5 @@ if __name__ == "__main__":
         all_cases = [d for d in os.listdir(PREDICTION_DIR) if os.path.isdir(os.path.join(PREDICTION_DIR, d))]
         for case in all_cases:
             results = evaluate_case(case)
-            write_results_to_csv(results, PREDICTION_DIR + "/evaluation_results.csv")
+            csv_path = os.path.join(PREDICTION_DIR, f"{args.csv}.csv")
+            write_results_to_csv(results, csv_path)
