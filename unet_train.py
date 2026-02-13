@@ -46,12 +46,12 @@ def worker_init_fn(worker_id):
 # hyperparameters
 def parse_args():
     parser = argparse.ArgumentParser(description="Train MedDINO model (Iteration-based)")
-    parser.add_argument("--batch", type=int, default=16, help="Batch size for training")
+    parser.add_argument("--batch", type=int, default=8, help="Batch size for training")
 
     # [修改] 训练长度控制改为 max_steps
     parser.add_argument("--max_steps", type=int, default=100000, help="Total number of training steps")
     parser.add_argument("--val_interval", type=int, default=1000, help="Validation interval (steps)")
-    parser.add_argument("--save_interval", type=int, default=10000, help="Checkpoint save interval (steps)")
+    # parser.add_argument("--save_interval", type=int, default=10000, help="Checkpoint save interval (steps)")
 
     parser.add_argument("--img_size", type=int, default=256, help="Input image size")
     # parser.add_argument("--unfreeze", action="store_true", help="Unfreeze encoder (ViT backbone) during training")
@@ -267,9 +267,9 @@ def train(log_dir, save_dir, args, device):
                 torch.save(model.state_dict(), os.path.join(save_dir, "best_model.pth"))
                 print("  -> Saved Best Model!")
 
-        # --- Periodic Checkpoint ---
-        if step % args.save_interval == 0:
-            torch.save(model.state_dict(), os.path.join(save_dir, f"step_{step}.pth"))
+        # # --- Periodic Checkpoint ---
+        # if step % args.save_interval == 0:
+        #     torch.save(model.state_dict(), os.path.join(save_dir, f"step_{step}.pth"))
 
     # End of Training
     torch.save(model.state_dict(), os.path.join(save_dir, "final_model.pth"))

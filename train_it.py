@@ -37,7 +37,7 @@ def worker_init_fn(worker_id):
 # hyperparameters
 def parse_args():
     parser = argparse.ArgumentParser(description="Train MedDINO model (Iteration-based)")
-    parser.add_argument("--batch", type=int, default=16, help="Batch size for training")
+    parser.add_argument("--batch", type=int, default=8, help="Batch size for training")
     
     # [修改] 训练长度控制改为 max_steps
     parser.add_argument("--max_steps", type=int, default=100000, help="Total number of training steps")
@@ -79,7 +79,7 @@ def train(log_dir, save_dir, args, device):
     # 3. Loss & Optimizer
     criterion = AnatomyAwareLoss(
         global_l1_weight=1.0,
-        masked_l1_weight=0.05,
+        masked_l1_weight=0.1,
         masked_grad_weight=0.1
         ).to(device)
     val_criterion = CharbonnierLoss().to(device)
